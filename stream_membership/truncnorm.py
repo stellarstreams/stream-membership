@@ -13,7 +13,7 @@ from jax._src.scipy.stats.truncnorm import _log_gauss_mass
 from jax._src.scipy.stats.truncnorm import logpdf as truncnorm_logpdf
 from numpyro.distributions.util import is_prng_key, promote_shapes
 
-__all__ = ["APWTruncatedNormal"]
+__all__ = ["CustomTruncatedNormal"]
 
 
 @_wraps(osp_stats.truncnorm.ppf, update_doc=False)
@@ -55,7 +55,7 @@ def rvs(key, a, b, loc=0.0, scale=1.0, shape=()):
     return Y * scale + loc
 
 
-class APWTruncatedNormal(dist.Distribution):
+class CustomTruncatedNormal(dist.Distribution):
     arg_constraints = {
         "loc": dist.constraints.real,
         "scale": dist.constraints.positive,
