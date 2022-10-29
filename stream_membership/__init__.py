@@ -1,2 +1,4 @@
-from .base import SplineDensityModelBase, SplineDensityMixtureModel
-from .truncnorm import CustomTruncatedNormal
+from .base import SplineDensityModelBase, SplineDensityMixtureModel  # noqa
+from .truncnorm import CustomTruncatedNormal  # noqa
+
+VERSION = "v0.1"
