@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.scipy as jsci
 import numpyro.distributions as dist
 
-from .truncnorm import APWTruncatedNormal
+from .truncnorm import CustomTruncatedNormal
 
 __all__ = ["ln_simpson"]
 
@@ -35,8 +35,8 @@ def two_truncated_normal_mixture(w, mean1, ln_std1, mean2, ln_std2, low, high, y
     var2 = var1 + jnp.exp(2 * ln_std2) + yerr**2
 
     dists = [
-        APWTruncatedNormal(mean1, jnp.sqrt(var1), low=low, high=high),
-        APWTruncatedNormal(mean2, jnp.sqrt(var2), low=low, high=high),
+        CustomTruncatedNormal(mean1, jnp.sqrt(var1), low=low, high=high),
+        CustomTruncatedNormal(mean2, jnp.sqrt(var2), low=low, high=high),
     ]
     return dist.MixtureGeneral(mix, dists)
 
