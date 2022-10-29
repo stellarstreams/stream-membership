@@ -51,7 +51,7 @@ def rvs(key, a, b, loc=0.0, scale=1.0, shape=()):
     finfo = jnp.finfo(dtype)
     minval = finfo.tiny
     U = uniform(key, shape=shape, minval=minval)
-    Y = ppf(U, a, b, loc=loc, scale=scale)
+    Y = ppf(U, a, b)
     return Y * scale + loc
 
 
