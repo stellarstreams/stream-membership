@@ -104,13 +104,12 @@ class ModelBase(abc.ABC):
             tmp_data = {"phi1": grid1.ravel()}
             for tmp_name in self.coord_names:
                 if tmp_name == name:
-                    tmp_data[name] = grid2.ravel()
+                    tmp_data[tmp_name] = grid2.ravel()
                 else:
-                    tmp_data[name] = jnp.zeros_like(grid1.ravel())
+                    tmp_data[tmp_name] = jnp.zeros_like(grid1.ravel())
                 # TODO: hard-coded assumption that data errors are named _err
-                tmp_data[f"{name}_err"] = jnp.zeros_like(grid1.ravel())
+                tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
 
-            print(tmp_data)
             ln_n = self.ln_number_density(tmp_data, return_terms=True)[name]
             terms[name] = ln_n.reshape(grid1.shape)
             all_grids[name] = (grid1, grid2)
