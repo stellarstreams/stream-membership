@@ -386,7 +386,7 @@ class SplineDensityModelBase(ModelBase):
 
         # Validate input data:
         for coord_name in self.coord_names:
-            if self.data is not None and coord_name not in pars:
+            if self.data is not None and coord_name not in self.data:
                 raise ValueError(
                     f"Expected coordinate name '{coord_name}' in input data"
                 )
