@@ -88,7 +88,7 @@ class ModelBase(abc.ABC):
         for name in ("phi1",) + self.coord_names:
             if name not in grids and name not in self.default_grids:
                 raise ValueError(f"No default grid for {name}, so you must specify it")
-            grids[name] = self.default_grids.get(name, grids.get(name))
+            grids[name] = grids.get(name, self.default_grids.get(name))
         return grids
 
     def evaluate_on_grids(self, grids=None):
@@ -210,6 +210,53 @@ class ModelBase(abc.ABC):
         return self._plot_projections(
             grids=im_grids,
             ims=ims,
+            axes=axes,
+            label=label,
+            pcolormesh_kwargs=pcolormesh_kwargs,
+        )
+
+    def plot_residual_projections(
+        self,
+        data,
+        grids=None,
+        axes=None,
+        label=True,
+        smooth=1.0,
+        pcolormesh_kwargs=None,
+    ):
+        from scipy.ndimage import gaussian_filter
+
+        grids = self._get_grids_dict(grids)
+
+        # Evaluate the model at the grid midpoints
+        model_grids = {k: 0.5 * (g[:-1] + g[1:]) for k, g in grids.items()}
+        im_grids, ln_ns = self.evaluate_on_grids(grids=model_grids)
+        model_ims = {name: np.exp(ln_ns[name]) for name in self.coord_names}
+
+        resid_ims = {}
+        for name in self.coord_names:
+            # get the number density: density=True is the prob density, so need to
+            # multiply back in the total number of data points
+            H_data, *_ = np.histogram2d(
+                data["phi1"], data[name], bins=(grids["phi1"], grids[name]), density=True
+            )
+            data_im = H_data.T * len(data['phi1'])
+
+            resid_ims[name] = model_ims[name] - data_im
+
+            if smooth is not None:
+                resid_ims[name] = gaussian_filter(resid_ims[name], smooth)
+
+        if pcolormesh_kwargs is None:
+            pcolormesh_kwargs = {}
+        pcolormesh_kwargs.setdefault('cmap', 'coolwarm_r')
+        # TODO: hard-coded 10 - could be a percentile?
+        pcolormesh_kwargs.setdefault('vmin', -10)
+        pcolormesh_kwargs.setdefault('vmax', 10)
+
+        return self._plot_projections(
+            grids=im_grids,
+            ims=resid_ims,
             axes=axes,
             label=label,
             pcolormesh_kwargs=pcolormesh_kwargs,
