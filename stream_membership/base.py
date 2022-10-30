@@ -1,4 +1,6 @@
 import abc
+import copy
+import inspect
 
 import jax.numpy as jnp
 import numpy as np
@@ -108,6 +110,7 @@ class ModelBase(abc.ABC):
                 # TODO: hard-coded assumption that data errors are named _err
                 tmp_data[f"{name}_err"] = jnp.zeros_like(grid1.ravel())
 
+            print(tmp_data)
             ln_n = self.ln_number_density(tmp_data, return_terms=True)[name]
             terms[name] = ln_n.reshape(grid1.shape)
             all_grids[name] = (grid1, grid2)
@@ -257,7 +260,8 @@ class ModelBase(abc.ABC):
             ax.set_ylabel(coord_name)
 
         if add_legend:
-            axes[0].legend(loc="best")
+            for ax in axes:
+                ax.legend(loc="best")
 
         axes[0].set_title(self.name)
 
@@ -287,6 +291,15 @@ class SplineDensityModelBase(ModelBase):
     coord_names = ("phi2", "plx", "pm1", "pm2", "rv")
 
     def __init_subclass__(cls):
+        # Do this otherwise all subclasses will share the same mutables (i.e. dictionary
+        # or strings) and modifying one will modify all:
+        for name, thing in inspect.getmembers(cls):
+            if inspect.isfunction(thing) or inspect.ismethod(thing):
+                continue
+            elif name.startswith('_'):
+                continue
+            setattr(cls, name, copy.deepcopy(getattr(cls, name)))
+
         # name value is required:
         if not cls.__name__.endswith("Base") and cls.name is None:
             raise ValueError("you must specify a model component name")
