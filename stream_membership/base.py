@@ -271,7 +271,7 @@ class ModelBase(abc.ABC):
     # Optimization
     #
     @classmethod
-    def optimize(cls, data, init_params, seed=42, **kwargs):
+    def optimize(cls, data, init_params, seed=42, jaxopt_kwargs=None, **kwargs):
         """
         A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
         for numpyro models.
@@ -279,9 +279,14 @@ class ModelBase(abc.ABC):
         from numpyro_ext.optim import optimize
         from .optim import CustomJAXOptMinimize
 
+        if jaxopt_kwargs is None:
+            jaxopt_kwargs = {}
+        jaxopt_kwargs.setdefault('method', 'BFGS')
+        jaxopt_kwargs.setdefault('maxiter', 1024)
+
         strategy = CustomJAXOptMinimize(
             loss_scale_factor=1 / len(data['phi1']),
-            method='BFGS',
+            **jaxopt_kwargs
         )
         optimizer = optimize(
             cls.setup_numpyro,
