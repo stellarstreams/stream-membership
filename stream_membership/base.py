@@ -2,6 +2,7 @@ import abc
 import copy
 import inspect
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpyro
@@ -265,6 +266,33 @@ class ModelBase(abc.ABC):
         axes[0].set_title(self.name)
 
         return axes[0].figure, axes
+
+    ###################################################################################
+    # Optimization
+    #
+    @classmethod
+    def optimize(cls, data, init_params, seed=42, **kwargs):
+        """
+        A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
+        for numpyro models.
+        """
+        from numpyro_ext.optim import optimize
+        from .optim import CustomJAXOptMinimize
+
+        strategy = CustomJAXOptMinimize(
+            loss_scale_factor=1 / len(data['phi1']),
+            method='BFGS',
+        )
+        optimizer = optimize(
+            cls.setup_numpyro,
+            start=init_params,
+            return_info=True,
+            optimizer=strategy
+        )
+        opt_pars, info = optimizer(jax.random.PRNGKey(seed), data=data, **kwargs)
+        opt_pars = {k: v for k, v in opt_pars.items() if not k.startswith('obs_')}
+
+        return cls.unpack_params(opt_pars, **kwargs), info
 
 
 class SplineDensityModelBase(ModelBase):
