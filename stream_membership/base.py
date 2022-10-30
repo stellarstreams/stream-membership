@@ -338,12 +338,13 @@ class SplineDensityModelBase(ModelBase):
 
         for coord_name in cls.coord_names:
             cls.shapes[coord_name] = {}
-            cls.spline_ks[coord_name] = {}
+            tmp_ks = {}
             for par_name in cls.param_bounds[coord_name]:
                 cls.shapes[coord_name][par_name] = len(cls.knots[coord_name])
-                cls.spline_ks[coord_name][par_name] = cls.spline_ks[coord_name].get(
+                tmp_ks[par_name] = cls.spline_ks.get(coord_name, {}).get(
                     par_name, default_k
                 )
+            cls.spline_ks[coord_name] = tmp_ks
 
     def __init__(self, pars, **kwargs):
         """
