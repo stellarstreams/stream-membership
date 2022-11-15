@@ -15,6 +15,9 @@ from .helpers import ln_simpson
 __all__ = []
 
 
+_endpoints = "not-a-knot"
+
+
 class ModelBase(abc.ABC):
 
     ###################################################################################
@@ -37,6 +40,27 @@ class ModelBase(abc.ABC):
     ###################################################################################
     # Shared methods for any spline density model (component or mixture):
     #
+    def _setup_data(self, data):
+        # Note: data should be passed in / through by setup_numpyro(), but shouldn't be
+        # passed as an argument when using the class otherwise:
+        self.data = data
+
+        # Validate input data:
+        for coord_name in self.coord_names:
+            if self.data is not None and coord_name not in self.data:
+                raise ValueError(
+                    f"Expected coordinate name '{coord_name}' in input data"
+                )
+
+        if self.data is not None:
+            # Compute the log of the effective volume integral, used in the poisson
+            # process likelihood
+            ln_V = self.get_ln_V()
+            ln_n = self.ln_number_density(self.data)
+            numpyro.factor(f"V_{self.name}", -jnp.exp(ln_V))
+            numpyro.factor(f"ln_n_{self.name}", ln_n.sum())
+            numpyro.factor(f"extra_prior_{self.name}", self.extra_ln_prior())
+
     def get_ln_n0(self, data):
         return self.splines["ln_n0"](data["phi1"])
 
@@ -460,36 +484,7 @@ class SplineDensityModelBase(ModelBase):
         # store the input parameters, setup splines, and store data:
         self.pars = pars
         self.splines = self.get_splines(self.pars)
-
-        # Note: data should be passed in / through by setup_numpyro(), but shouldn't be
-        # passed as an argument when using the class otherwise:
-        self.data = kwargs.get("data", None)
-
-        # Validate input data:
-        for coord_name in self.coord_names:
-            if self.data is not None and coord_name not in self.data:
-                raise ValueError(
-                    f"Expected coordinate name '{coord_name}' in input data"
-                )
-
-        if self.data is not None:
-            # Note: This is a required method that must be implemented in subclasses!
-            dists = self.get_dists(self.data)
-
-            # Compute the log of the effective volume integral, used in the poisson
-            # process likelihood
-            ln_V = self.get_ln_V()
-            ln_n0 = self.splines["ln_n0"](self.data["phi1"])
-            numpyro.factor(f"obs_ln_n0_{self.name}", -jnp.exp(ln_V) + ln_n0.sum())
-
-            for coord_name in self.coord_names:
-                numpyro.sample(
-                    f"obs_{coord_name}_{self.name}",
-                    dists[coord_name],
-                    obs=self.data[coord_name],
-                )
-
-            numpyro.factor(f"extra_prior_{self.name}", self.extra_ln_prior())
+        self._setup_data(kwargs.get("data", None))
 
     def get_splines(self, pars):
         """
@@ -504,7 +499,7 @@ class SplineDensityModelBase(ModelBase):
             self.knots[self.density_name],
             pars[self.density_name],
             k=self.spline_ks[self.density_name],
-            endpoints="natural",
+            endpoints=_endpoints,
         )
         for coord_name in self.coord_names:
             if coord_name not in self.knots:
@@ -516,7 +511,7 @@ class SplineDensityModelBase(ModelBase):
                     self.knots[coord_name],
                     pars[coord_name][par_name],
                     k=self.spline_ks[coord_name][par_name],
-                    endpoints="natural",
+                    endpoints=_endpoints,
                 )
 
         return spls
@@ -581,15 +576,13 @@ class SplineDensityModelBase(ModelBase):
 
 
 class SplineDensityMixtureModel(ModelBase):
+    name = "mixture"
+
     def __init__(self, components, integration_grid_phi1=None, **kwargs):
         self.coord_names = None
 
-        # TODO: validate that at least 1 compinent here
+        # TODO: validate that at least 1 component here
         self.components = components
-
-        # Find the integration grid with the smallest step size:
-        if integration_grid_phi1 is None:
-            integration_grid_phi1 = components[0].integration_grid_phi1
 
         for component in self.components:
             if self.coord_names is None:
@@ -598,29 +591,10 @@ class SplineDensityMixtureModel(ModelBase):
                 if self.coord_names != tuple(component.coord_names):
                     raise ValueError("TODO")
 
-        self.integration_grid_phi1 = integration_grid_phi1
-
         # TODO: same for default grids
         self.default_grids = component.default_grids
 
-        # Note: data should be passed in / through by setup_numpyro(), but shouldn't be
-        # passed as an argument when using the class otherwise:
-        self.data = kwargs.get("data", None)
-
-        if self.data is not None:
-            dists = self.get_dists(self.data)
-
-            ln_n0 = self.ln_number_density(self.data)
-            factor = -jnp.exp(self.get_ln_V()) + ln_n0.sum()
-            numpyro.factor("obs_ln_n0", factor)
-
-            for coord_name in self.coord_names:
-                numpyro.sample(
-                    f"obs_{coord_name}", dists[coord_name], obs=self.data[coord_name]
-                )
-
-            for c in self.components:
-                numpyro.factor(f"smooth_{c.name}", c.extra_ln_prior())
+        self._setup_data(kwargs.get("data", None))
 
     @classmethod
     def setup_numpyro(cls, Components, data=None):
@@ -644,6 +618,7 @@ class SplineDensityMixtureModel(ModelBase):
             return terms
 
     def get_dists(self, data):
+        # TODO: this only works for 2D marginals!
         all_dists = [c.get_dists(data) for c in self.components]
 
         ln_n0s = self.get_ln_n0(data, return_total=False)
@@ -661,6 +636,25 @@ class SplineDensityMixtureModel(ModelBase):
 
         return dists
 
+    def ln_prob_density(self, data, return_terms=False):
+        ln_n = self.ln_number_density(data, return_terms)
+        total_ln_n0 = self.get_ln_n0(data, return_total=True)
+        return ln_n - total_ln_n0
+
+    def ln_number_density(self, data, return_terms=False):
+        if return_terms:
+            raise NotImplementedError("Sorry")
+
+        ln_n0s = self.get_ln_n0(data, return_total=False)
+
+        ln_ns = []
+        for c, ln_n0 in zip(self.components, ln_n0s):
+            ln_ns.append(
+                ln_n0 + c.ln_prob_density(data, return_terms=False)
+            )
+
+        return logsumexp(jnp.array(ln_ns), axis=0)
+
     @classmethod
     def unpack_params(cls, pars, Components):
         pars_unpacked = {}
@@ -675,6 +669,36 @@ class SplineDensityMixtureModel(ModelBase):
         for C in Components:
             pars_unpacked[C.name] = C.unpack_params(pars_unpacked[C.name])
         return pars_unpacked
+
+    def evaluate_on_grids(self, grids=None):
+        grids = self._get_grids_dict(grids)
+
+        all_grids = {}
+        terms = {}
+        for name in self.coord_names:
+            grid1, grid2 = np.meshgrid(grids["phi1"], grids[name])
+
+            # Fill a data dict with zeros for all coordinates not being plotted
+            # TODO: this is a hack and we take a performance hit for this because we
+            # unnecessarily compute log-probs at nonsense values
+            tmp_data = {"phi1": grid1.ravel()}
+            for tmp_name in self.coord_names:
+                if tmp_name == name:
+                    tmp_data[tmp_name] = grid2.ravel()
+                else:
+                    tmp_data[tmp_name] = jnp.zeros_like(grid1.ravel())
+                # TODO: hard-coded assumption that data errors are named _err
+                tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
+
+            ln_ns = [
+                c.ln_number_density(tmp_data, return_terms=True)[name]
+                for c in self.components
+            ]
+            ln_n = logsumexp(jnp.array(ln_ns), axis=0)
+            terms[name] = ln_n.reshape(grid1.shape)
+            all_grids[name] = (grid1, grid2)
+
+        return all_grids, terms
 
     def plot_knots(self, axes=None, **kwargs):
 
