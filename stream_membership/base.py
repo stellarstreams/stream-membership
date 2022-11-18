@@ -11,6 +11,7 @@ from jax.scipy.special import logsumexp
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
 from .helpers import ln_simpson
+from .plot import _plot_projections
 
 __all__ = []
 
@@ -103,31 +104,43 @@ class ModelBase(abc.ABC):
         ln_n = self.ln_number_density(data, return_terms=False)
         return -jnp.exp(self.get_ln_V()) + ln_n.sum()
 
+    @classmethod
+    def objective(cls, p, data):
+        model = cls(p)
+        ll = model.ln_likelihood(data)
+        return -ll / len(data['phi1'])
+
     ###################################################################################
     # Evaluating on grids and plotting
     #
-    def _get_grids_dict(self, grids):
+    def _get_grids_dict(self, grids, coord_names=None):
+        if coord_names is None:
+            coord_names = self.coord_names
+
         if grids is None:
             grids = {}
-        for name in ("phi1",) + self.coord_names:
+        for name in ("phi1",) + coord_names:
             if name not in grids and name not in self.default_grids:
                 raise ValueError(f"No default grid for {name}, so you must specify it")
-            grids[name] = grids.get(name, self.default_grids.get(name))
+            if name not in grids:
+                grids[name] = self.default_grids.get(name)
         return grids
 
-    def evaluate_on_grids(self, grids=None):
-        grids = self._get_grids_dict(grids)
+    def evaluate_on_grids(self, grids=None, coord_names=None):
+        if coord_names is None:
+            coord_names = self.coord_names
+        grids = self._get_grids_dict(grids, coord_names)
 
         all_grids = {}
         terms = {}
-        for name in self.coord_names:
+        for name in coord_names:
             grid1, grid2 = np.meshgrid(grids["phi1"], grids[name])
 
             # Fill a data dict with zeros for all coordinates not being plotted
             # TODO: this is a hack and we take a performance hit for this because we
             # unnecessarily compute log-probs at nonsense values
             tmp_data = {"phi1": grid1.ravel()}
-            for tmp_name in self.coord_names:
+            for tmp_name in coord_names:
                 if tmp_name == name:
                     tmp_data[tmp_name] = grid2.ravel()
                 else:
@@ -141,98 +154,21 @@ class ModelBase(abc.ABC):
 
         return all_grids, terms
 
-    def _plot_projections(
-        self,
-        grids,
-        ims,
-        axes=None,
-        label=True,
-        pcolormesh_kwargs=None,
-    ):
-        import matplotlib as mpl
-
-        _default_labels = {
-            "phi2": r"$\phi_2$",
-            "pm1": r"$\mu_{\phi_1}$",
-            "pm2": r"$\mu_{\phi_2}$",
-        }
-
-        if pcolormesh_kwargs is None:
-            pcolormesh_kwargs = {}
-
-        if axes is None:
-            import matplotlib.pyplot as plt
-
-            _, axes = plt.subplots(
-                len(self.coord_names),
-                1,
-                figsize=(10, 2 + 2 * len(self.coord_names)),
-                sharex=True,
-                sharey="row",
-                constrained_layout=True,
-            )
-
-        if isinstance(axes, mpl.axes.Axes):
-            axes = [axes]
-        axes = np.array(axes)
-
-        for i, name in enumerate(self.coord_names):
-            grid1, grid2 = grids[name]
-            axes[i].pcolormesh(
-                grid1, grid2, ims[name], shading="auto", **pcolormesh_kwargs
-            )
-            axes[i].set_ylim(grid2.min(), grid2.max())
-
-            if label:
-                axes[i].set_ylabel(_default_labels[name])
-
-        axes[0].set_xlim(grid1.min(), grid1.max())
-
-        return axes.flat[0].figure, axes
-
     def plot_model_projections(
         self,
         grids=None,
         axes=None,
         label=True,
         pcolormesh_kwargs=None,
+        coord_names=None
     ):
-        grids, ln_ns = self.evaluate_on_grids(grids=grids)
+        if coord_names is None:
+            coord_names = self.coord_names
+
+        grids, ln_ns = self.evaluate_on_grids(grids=grids, coord_names=coord_names)
         ims = {name: np.exp(ln_ns[name]) for name in self.coord_names}
-        return self._plot_projections(
+        return _plot_projections(
             grids=grids,
-            ims=ims,
-            axes=axes,
-            label=label,
-            pcolormesh_kwargs=pcolormesh_kwargs,
-        )
-
-    def plot_data_projections(
-        self,
-        data,
-        grids=None,
-        axes=None,
-        label=True,
-        smooth=1.0,
-        pcolormesh_kwargs=None,
-    ):
-        from scipy.ndimage import gaussian_filter
-
-        grids = self._get_grids_dict(grids)
-
-        ims = {}
-        im_grids = {}
-        for name in self.coord_names:
-            H_data, xe, ye = np.histogram2d(
-                data["phi1"], data[name], bins=(grids["phi1"], grids[name])
-            )
-            if smooth is not None:
-                H_data = gaussian_filter(H_data, smooth)
-            im_grids[name] = (xe, ye)
-            ims[name] = H_data.T
-
-        return self._plot_projections(
-            grids=im_grids,
             ims=ims,
             axes=axes,
             label=label,
@@ -247,10 +183,14 @@ class ModelBase(abc.ABC):
         label=True,
         smooth=1.0,
         pcolormesh_kwargs=None,
+        coord_names=None
     ):
         from scipy.ndimage import gaussian_filter
 
-        grids = self._get_grids_dict(grids)
+        if coord_names is None:
+            coord_names = self.coord_names
+
+        grids = self._get_grids_dict(grids, coord_names)
 
         # Evaluate the model at the grid midpoints
         model_grids = {k: 0.5 * (g[:-1] + g[1:]) for k, g in grids.items()}
@@ -278,7 +218,7 @@ class ModelBase(abc.ABC):
         pcolormesh_kwargs.setdefault('vmin', -10)
         pcolormesh_kwargs.setdefault('vmax', 10)
 
-        return self._plot_projections(
+        return _plot_projections(
             grids=im_grids,
             ims=resid_ims,
             axes=axes,
@@ -342,33 +282,77 @@ class ModelBase(abc.ABC):
     # Optimization
     #
     @classmethod
-    def optimize(cls, data, init_params, seed=42, jaxopt_kwargs=None, **kwargs):
+    def optimize(cls, data, init_params, seed=42, jaxopt_kwargs=None, use_bounds=True,
+                 **kwargs):
         """
         A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
         for numpyro models.
         """
         from numpyro_ext.optim import optimize
-        from .optim import CustomJAXOptMinimize
+        from .optim import CustomJAXOptBoundedMinimize, CustomJAXOptMinimize
 
         if jaxopt_kwargs is None:
             jaxopt_kwargs = {}
-        jaxopt_kwargs.setdefault('method', 'BFGS')
-        jaxopt_kwargs.setdefault('maxiter', 1024)
+        jaxopt_kwargs.setdefault('maxiter', 2048)
 
-        strategy = CustomJAXOptMinimize(
-            loss_scale_factor=1 / len(data['phi1']),
-            **jaxopt_kwargs
-        )
+        if use_bounds:
+            jaxopt_kwargs.setdefault('method', 'L-BFGS-B')
+            bounds = cls._get_jaxopt_bounds()
+            strategy = CustomJAXOptBoundedMinimize(
+                loss_scale_factor=1 / len(data['phi1']),
+                bounds=bounds,
+                **jaxopt_kwargs
+            )
+        else:
+            jaxopt_kwargs.setdefault('method', 'BFGS')
+            strategy = CustomJAXOptMinimize(
+                loss_scale_factor=1 / len(data['phi1']),
+                **jaxopt_kwargs
+            )
+
         optimizer = optimize(
             cls.setup_numpyro,
             start=init_params,
             return_info=True,
-            optimizer=strategy
+            optimizer=strategy,
         )
         opt_pars, info = optimizer(jax.random.PRNGKey(seed), data=data, **kwargs)
         opt_pars = {k: v for k, v in opt_pars.items() if not k.startswith('obs_')}
 
         return cls.unpack_params(opt_pars, **kwargs), info
+
+    @classmethod
+    def _get_jaxopt_bounds(cls):
+        bounds_l = {}
+        bounds_h = {}
+        for k, bounds in cls.param_bounds.items():
+            if k != 'ln_n0' and k not in cls.coord_names:
+                continue
+
+            if isinstance(bounds, dict):
+                bounds_l[k] = {}
+                bounds_h[k] = {}
+                for par_name, sub_bounds in bounds.items():
+                    bounds_l[k][par_name] = jnp.full(
+                        cls.shapes[k][par_name],
+                        sub_bounds[0]
+                    )
+                    bounds_h[k][par_name] = jnp.full(
+                        cls.shapes[k][par_name],
+                        sub_bounds[1]
+                    )
+
+            else:
+                bounds_l[k] = jnp.full(
+                    cls.shapes[k],
+                    bounds[0]
+                )
+                bounds_h[k] = jnp.full(
+                    cls.shapes[k],
+                    bounds[1]
+                )
+
+        return (bounds_l, bounds_h)
 
 
 class SplineDensityModelBase(ModelBase):
@@ -578,11 +562,12 @@ class SplineDensityModelBase(ModelBase):
 class SplineDensityMixtureModel(ModelBase):
     name = "mixture"
 
-    def __init__(self, components, integration_grid_phi1=None, **kwargs):
+    def __init__(self, components, **kwargs):
         self.coord_names = None
 
-        # TODO: validate that at least 1 component here
-        self.components = components
+        self.components = list(components)
+        if len(self.components) < 1:
+            raise ValueError("You must pass at least one component")
 
         for component in self.components:
             if self.coord_names is None:
@@ -656,6 +641,19 @@ class SplineDensityMixtureModel(ModelBase):
         return logsumexp(jnp.array(ln_ns), axis=0)
 
     @classmethod
+    def objective(cls, p, Components, data):
+        models = {C.name: C(p[C.name]) for C in Components}
+
+        ln_ns = jnp.array([model.ln_number_density(data) for model in models.values()])
+        ln_n = logsumexp(ln_ns, axis=0)
+
+        V = jnp.sum(jnp.array([jnp.exp(model.get_ln_V()) for model in models.values()]))
+
+        ll = -V + ln_n.sum()
+
+        return -ll / len(data['phi1'])
+
+    @classmethod
     def unpack_params(cls, pars, Components):
         pars_unpacked = {}
         for C in Components:
@@ -670,19 +668,23 @@ class SplineDensityMixtureModel(ModelBase):
             pars_unpacked[C.name] = C.unpack_params(pars_unpacked[C.name])
         return pars_unpacked
 
-    def evaluate_on_grids(self, grids=None):
-        grids = self._get_grids_dict(grids)
+    def evaluate_on_grids(self, grids=None, coord_names=None):
+        if coord_names is None:
+            coord_names = self.coord_names
+        if grids is None:
+            grids = self.default_grids
+        grids = self._get_grids_dict(grids, coord_names)
 
         all_grids = {}
         terms = {}
-        for name in self.coord_names:
+        for name in coord_names:
             grid1, grid2 = np.meshgrid(grids["phi1"], grids[name])
 
             # Fill a data dict with zeros for all coordinates not being plotted
             # TODO: this is a hack and we take a performance hit for this because we
             # unnecessarily compute log-probs at nonsense values
             tmp_data = {"phi1": grid1.ravel()}
-            for tmp_name in self.coord_names:
+            for tmp_name in coord_names:
                 if tmp_name == name:
                     tmp_data[tmp_name] = grid2.ravel()
                 else:
@@ -717,3 +719,15 @@ class SplineDensityMixtureModel(ModelBase):
             c.plot_knots(axes=axes[:, i], **kwargs)
 
         return np.array(axes).flat[0].figure, axes
+
+    @classmethod
+    def _get_jaxopt_bounds(cls, Components):
+        bounds_l = {}
+        bounds_h = {}
+        for Model in Components:
+            _bounds = Model._get_jaxopt_bounds()
+            bounds_l[Model.name] = _bounds[0]
+            bounds_h[Model.name] = _bounds[1]
+        bounds = (bounds_l, bounds_h)
+        return bounds
+

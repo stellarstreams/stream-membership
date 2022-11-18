@@ -62,7 +62,7 @@ class CustomTruncatedNormal(dist.Distribution):
         "low": dist.constraints.dependent,
         "high": dist.constraints.dependent,
     }
-    reparametrized_params = ["low", "high"]
+    # reparametrized_params = ["low", "high"]
 
     def __init__(self, loc=0.0, scale=1.0, low=-jnp.inf, high=jnp.inf):
         self.loc, self.scale, self.low, self.high = promote_shapes(
