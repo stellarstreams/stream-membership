@@ -2,15 +2,10 @@ import numpy as np
 
 
 def _plot_projections(
-    grids,
-    ims,
-    axes=None,
-    label=True,
-    pcolormesh_kwargs=None,
-    coord_names=None
+    grids, ims, axes=None, label=True, pcolormesh_kwargs=None, coord_names=None
 ):
     if coord_names is None:
-        coord_names = [k for k in grids.keys() if k != 'phi1']
+        coord_names = [k for k in grids.keys() if k != "phi1"]
 
     import matplotlib as mpl
 
@@ -41,9 +36,7 @@ def _plot_projections(
 
     for i, name in enumerate(coord_names):
         grid1, grid2 = grids[name]
-        axes[i].pcolormesh(
-            grid1, grid2, ims[name], shading="auto", **pcolormesh_kwargs
-        )
+        axes[i].pcolormesh(grid1, grid2, ims[name], shading="auto", **pcolormesh_kwargs)
         axes[i].set_ylim(grid2.min(), grid2.max())
 
         if label:
@@ -61,14 +54,14 @@ def plot_data_projections(
     label=True,
     smooth=1.0,
     pcolormesh_kwargs=None,
-    coord_names=None
+    coord_names=None,
 ):
     from scipy.ndimage import gaussian_filter
 
     if coord_names is None and grids is None:
         raise ValueError()
     elif coord_names is None:
-        coord_names = [k for k in grids.keys() if k != 'phi1']
+        coord_names = [k for k in grids.keys() if k != "phi1"]
 
     ims = {}
     im_grids = {}

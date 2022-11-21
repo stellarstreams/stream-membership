@@ -108,7 +108,7 @@ class ModelBase(abc.ABC):
     def objective(cls, p, data):
         model = cls(p)
         ll = model.ln_likelihood(data)
-        return -ll / len(data['phi1'])
+        return -ll / len(data["phi1"])
 
     ###################################################################################
     # Evaluating on grids and plotting
@@ -160,7 +160,7 @@ class ModelBase(abc.ABC):
         axes=None,
         label=True,
         pcolormesh_kwargs=None,
-        coord_names=None
+        coord_names=None,
     ):
         if coord_names is None:
             coord_names = self.coord_names
@@ -183,7 +183,7 @@ class ModelBase(abc.ABC):
         label=True,
         smooth=1.0,
         pcolormesh_kwargs=None,
-        coord_names=None
+        coord_names=None,
     ):
         from scipy.ndimage import gaussian_filter
 
@@ -202,9 +202,12 @@ class ModelBase(abc.ABC):
             # get the number density: density=True is the prob density, so need to
             # multiply back in the total number of data points
             H_data, *_ = np.histogram2d(
-                data["phi1"], data[name], bins=(grids["phi1"], grids[name]), density=True
+                data["phi1"],
+                data[name],
+                bins=(grids["phi1"], grids[name]),
+                density=True,
             )
-            data_im = H_data.T * len(data['phi1'])
+            data_im = H_data.T * len(data["phi1"])
 
             resid_ims[name] = model_ims[name] - data_im
 
@@ -213,10 +216,10 @@ class ModelBase(abc.ABC):
 
         if pcolormesh_kwargs is None:
             pcolormesh_kwargs = {}
-        pcolormesh_kwargs.setdefault('cmap', 'coolwarm_r')
+        pcolormesh_kwargs.setdefault("cmap", "coolwarm_r")
         # TODO: hard-coded 10 - could be a percentile?
-        pcolormesh_kwargs.setdefault('vmin', -10)
-        pcolormesh_kwargs.setdefault('vmax', 10)
+        pcolormesh_kwargs.setdefault("vmin", -10)
+        pcolormesh_kwargs.setdefault("vmax", 10)
 
         return _plot_projections(
             grids=im_grids,
@@ -282,32 +285,31 @@ class ModelBase(abc.ABC):
     # Optimization
     #
     @classmethod
-    def optimize(cls, data, init_params, seed=42, jaxopt_kwargs=None, use_bounds=True,
-                 **kwargs):
+    def optimize(
+        cls, data, init_params, seed=42, jaxopt_kwargs=None, use_bounds=True, **kwargs
+    ):
         """
         A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
         for numpyro models.
         """
         from numpyro_ext.optim import optimize
+
         from .optim import CustomJAXOptBoundedMinimize, CustomJAXOptMinimize
 
         if jaxopt_kwargs is None:
             jaxopt_kwargs = {}
-        jaxopt_kwargs.setdefault('maxiter', 2048)
+        jaxopt_kwargs.setdefault("maxiter", 2048)
 
         if use_bounds:
-            jaxopt_kwargs.setdefault('method', 'L-BFGS-B')
+            jaxopt_kwargs.setdefault("method", "L-BFGS-B")
             bounds = cls._get_jaxopt_bounds()
             strategy = CustomJAXOptBoundedMinimize(
-                loss_scale_factor=1 / len(data['phi1']),
-                bounds=bounds,
-                **jaxopt_kwargs
+                loss_scale_factor=1 / len(data["phi1"]), bounds=bounds, **jaxopt_kwargs
             )
         else:
-            jaxopt_kwargs.setdefault('method', 'BFGS')
+            jaxopt_kwargs.setdefault("method", "BFGS")
             strategy = CustomJAXOptMinimize(
-                loss_scale_factor=1 / len(data['phi1']),
-                **jaxopt_kwargs
+                loss_scale_factor=1 / len(data["phi1"]), **jaxopt_kwargs
             )
 
         optimizer = optimize(
@@ -317,7 +319,7 @@ class ModelBase(abc.ABC):
             optimizer=strategy,
         )
         opt_pars, info = optimizer(jax.random.PRNGKey(seed), data=data, **kwargs)
-        opt_pars = {k: v for k, v in opt_pars.items() if not k.startswith('obs_')}
+        opt_pars = {k: v for k, v in opt_pars.items() if not k.startswith("obs_")}
 
         return cls.unpack_params(opt_pars, **kwargs), info
 
@@ -326,7 +328,7 @@ class ModelBase(abc.ABC):
         bounds_l = {}
         bounds_h = {}
         for k, bounds in cls.param_bounds.items():
-            if k != 'ln_n0' and k not in cls.coord_names:
+            if k != "ln_n0" and k not in cls.coord_names:
                 continue
 
             if isinstance(bounds, dict):
@@ -334,23 +336,15 @@ class ModelBase(abc.ABC):
                 bounds_h[k] = {}
                 for par_name, sub_bounds in bounds.items():
                     bounds_l[k][par_name] = jnp.full(
-                        cls.shapes[k][par_name],
-                        sub_bounds[0]
+                        cls.shapes[k][par_name], sub_bounds[0]
                     )
                     bounds_h[k][par_name] = jnp.full(
-                        cls.shapes[k][par_name],
-                        sub_bounds[1]
+                        cls.shapes[k][par_name], sub_bounds[1]
                     )
 
             else:
-                bounds_l[k] = jnp.full(
-                    cls.shapes[k],
-                    bounds[0]
-                )
-                bounds_h[k] = jnp.full(
-                    cls.shapes[k],
-                    bounds[1]
-                )
+                bounds_l[k] = jnp.full(cls.shapes[k], bounds[0])
+                bounds_h[k] = jnp.full(cls.shapes[k], bounds[1])
 
         return (bounds_l, bounds_h)
 
@@ -383,7 +377,7 @@ class SplineDensityModelBase(ModelBase):
         for name, thing in inspect.getmembers(cls):
             if inspect.isfunction(thing) or inspect.ismethod(thing):
                 continue
-            elif name.startswith('_'):
+            elif name.startswith("_"):
                 continue
             setattr(cls, name, copy.deepcopy(getattr(cls, name)))
 
@@ -634,9 +628,7 @@ class SplineDensityMixtureModel(ModelBase):
 
         ln_ns = []
         for c, ln_n0 in zip(self.components, ln_n0s):
-            ln_ns.append(
-                ln_n0 + c.ln_prob_density(data, return_terms=False)
-            )
+            ln_ns.append(ln_n0 + c.ln_prob_density(data, return_terms=False))
 
         return logsumexp(jnp.array(ln_ns), axis=0)
 
@@ -651,7 +643,7 @@ class SplineDensityMixtureModel(ModelBase):
 
         ll = -V + ln_n.sum()
 
-        return -ll / len(data['phi1'])
+        return -ll / len(data["phi1"])
 
     @classmethod
     def unpack_params(cls, pars, Components):
@@ -730,4 +722,3 @@ class SplineDensityMixtureModel(ModelBase):
             bounds_h[Model.name] = _bounds[1]
         bounds = (bounds_l, bounds_h)
         return bounds
-
