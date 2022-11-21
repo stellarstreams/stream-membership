@@ -12,7 +12,7 @@ class CustomJAXOptMinimize(_NumPyroOptim):
     keyword arguments are passed directly to ``jaxopt.ScipyMinimize``.
     """
 
-    def __init__(self, loss_scale_factor=1., **kwargs):
+    def __init__(self, loss_scale_factor=1.0, **kwargs):
         try:
             import jaxopt  # noqa
         except ImportError:
@@ -44,7 +44,7 @@ class CustomJAXOptBoundedMinimize(_NumPyroOptim):
     keyword arguments are passed directly to ``jaxopt.ScipyBoundedMinimize``.
     """
 
-    def __init__(self, loss_scale_factor=1., bounds=None, **kwargs):
+    def __init__(self, loss_scale_factor=1.0, bounds=None, **kwargs):
         try:
             import jaxopt  # noqa
         except ImportError:
