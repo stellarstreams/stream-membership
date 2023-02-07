@@ -20,7 +20,6 @@ _endpoints = "not-a-knot"
 
 
 class ModelBase(abc.ABC):
-
     ###################################################################################
     # Required methods that must be implemented in subclasses:
     #
@@ -230,7 +229,6 @@ class ModelBase(abc.ABC):
         )
 
     def plot_knots(self, axes=None, add_legend=True):
-
         if axes is None:
             import matplotlib.pyplot as plt
 
@@ -695,7 +693,6 @@ class SplineDensityMixtureModel(ModelBase):
         return all_grids, terms
 
     def plot_knots(self, axes=None, **kwargs):
-
         if axes is None:
             import matplotlib.pyplot as plt
 
