@@ -38,7 +38,7 @@ class ModelBase(abc.ABC):
         return 0.0
 
     ###################################################################################
-    # Shared methods for any spline density model (component or mixture):
+    # Shared methods for any density model component (or mixture):
     #
     def _setup_data(self, data):
         # Note: data should be passed in / through by setup_numpyro(), but shouldn't be
@@ -60,15 +60,6 @@ class ModelBase(abc.ABC):
             numpyro.factor(f"V_{self.name}", -jnp.exp(ln_V))
             numpyro.factor(f"ln_n_{self.name}", ln_n.sum())
             numpyro.factor(f"extra_prior_{self.name}", self.extra_ln_prior())
-
-    def get_ln_n0(self, data):
-        return self.splines["ln_n0"](data["phi1"])
-
-    def get_ln_V(self):
-        return ln_simpson(
-            self.splines["ln_n0"](self.integration_grid_phi1),
-            x=self.integration_grid_phi1,
-        )
 
     def ln_prob_density(self, data, return_terms=False):
         """
@@ -227,57 +218,6 @@ class ModelBase(abc.ABC):
             label=label,
             pcolormesh_kwargs=pcolormesh_kwargs,
         )
-
-    def plot_knots(self, axes=None, add_legend=True):
-        if axes is None:
-            import matplotlib.pyplot as plt
-
-            _, axes = plt.subplots(
-                len(self.coord_names) + 1,
-                1,
-                figsize=(8, 4 * (len(self.coord_names) + 1)),
-                sharex=True,
-                constrained_layout=True,
-            )
-
-        spl = self.splines[self.density_name]
-        (l,) = axes[0].plot(
-            self.integration_grid_phi1,
-            spl(self.integration_grid_phi1),
-            marker="",
-            label=self.density_name,
-        )
-        axes[0].scatter(
-            self.knots[self.density_name],
-            spl(self.knots[self.density_name]),
-            color=l.get_color(),
-        )
-        axes[0].set_ylabel(self.density_name)
-
-        for i, coord_name in enumerate(self.coord_names, start=1):
-            ax = axes[i]
-
-            for par_name, spl in self.splines.get(coord_name, {}).items():
-                (l,) = ax.plot(
-                    self.integration_grid_phi1,
-                    spl(self.integration_grid_phi1),
-                    label=f"{coord_name}: {par_name}",
-                    marker="",
-                )
-                ax.scatter(
-                    self.knots[coord_name],
-                    spl(self.knots[coord_name]),
-                    color=l.get_color(),
-                )
-            ax.set_ylabel(coord_name)
-
-        if add_legend:
-            for ax in axes:
-                ax.legend(loc="best")
-
-        axes[0].set_title(self.name)
-
-        return axes[0].figure, axes
 
     ###################################################################################
     # Optimization
@@ -492,6 +432,15 @@ class SplineDensityModelBase(ModelBase):
 
         return spls
 
+    def get_ln_n0(self, data):
+        return self.splines["ln_n0"](data["phi1"])
+
+    def get_ln_V(self):
+        return ln_simpson(
+            self.splines["ln_n0"](self.integration_grid_phi1),
+            x=self.integration_grid_phi1,
+        )
+
     ###################################################################################
     # Utilities for manipulating parameters
     #
@@ -549,6 +498,57 @@ class SplineDensityModelBase(ModelBase):
             pars[coord_name][par_name] = packed_pars[k]
 
         return pars
+
+    def plot_knots(self, axes=None, add_legend=True):
+        if axes is None:
+            import matplotlib.pyplot as plt
+
+            _, axes = plt.subplots(
+                len(self.coord_names) + 1,
+                1,
+                figsize=(8, 4 * (len(self.coord_names) + 1)),
+                sharex=True,
+                constrained_layout=True,
+            )
+
+        spl = self.splines[self.density_name]
+        (l,) = axes[0].plot(
+            self.integration_grid_phi1,
+            spl(self.integration_grid_phi1),
+            marker="",
+            label=self.density_name,
+        )
+        axes[0].scatter(
+            self.knots[self.density_name],
+            spl(self.knots[self.density_name]),
+            color=l.get_color(),
+        )
+        axes[0].set_ylabel(self.density_name)
+
+        for i, coord_name in enumerate(self.coord_names, start=1):
+            ax = axes[i]
+
+            for par_name, spl in self.splines.get(coord_name, {}).items():
+                (l,) = ax.plot(
+                    self.integration_grid_phi1,
+                    spl(self.integration_grid_phi1),
+                    label=f"{coord_name}: {par_name}",
+                    marker="",
+                )
+                ax.scatter(
+                    self.knots[coord_name],
+                    spl(self.knots[coord_name]),
+                    color=l.get_color(),
+                )
+            ax.set_ylabel(coord_name)
+
+        if add_legend:
+            for ax in axes:
+                ax.legend(loc="best")
+
+        axes[0].set_title(self.name)
+
+        return axes[0].figure, axes
 
 
 class SplineDensityMixtureModel(ModelBase):
