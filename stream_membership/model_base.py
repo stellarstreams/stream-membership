@@ -82,6 +82,9 @@ class ModelBase(abc.ABC):
         return ln_n
 
     def ln_likelihood(self, data):
+        """
+        NOTE: This is the Poisson process likelihood
+        """
         ln_n = self.ln_number_density(data, return_terms=False)
         return -jnp.exp(self.get_ln_V()) + ln_n.sum()
 
@@ -209,6 +212,64 @@ class ModelBase(abc.ABC):
             label=label,
             pcolormesh_kwargs=pcolormesh_kwargs,
         )
+
+    ###################################################################################
+    # Utilities for manipulating parameters
+    #
+    @classmethod
+    def clip_params(cls, pars):
+        """
+        Clip the input parameter values so that they are within the requisite bounds
+        """
+        # TODO: tolerance MAGIC NUMBER 1e-2
+        tol = 1e-2
+
+        new_pars = {}
+        new_pars[cls.density_name] = jnp.clip(
+            pars[cls.density_name],
+            cls.param_bounds[cls.density_name][0] + tol,
+            cls.param_bounds[cls.density_name][1] - tol,
+        )
+        for coord_name in cls.coord_names:
+            new_pars[coord_name] = {}
+            for par_name in cls.param_bounds[coord_name]:
+                new_pars[coord_name][par_name] = jnp.clip(
+                    pars[coord_name][par_name],
+                    cls.param_bounds[coord_name][par_name][0] + tol,
+                    cls.param_bounds[coord_name][par_name][1] - tol,
+                )
+        return new_pars
+
+    @classmethod
+    def _strip_model_name(cls, packed_pars):
+        """
+        Remove the model component name from the parameter names of a packed parameter
+        dictionary.
+        """
+        return {k[: -(len(cls.name) + 1)]: v for k, v in packed_pars.items()}
+
+    @classmethod
+    def unpack_params(cls, packed_pars):
+        """
+        Unpack a flat dictionary of parameters -- where keys have coordinate name,
+        parameter name, and model component name -- into a nested dictionary with
+        parameters grouped by coordinate name
+        """
+        packed_pars = cls._strip_model_name(packed_pars)
+
+        pars = {}
+        for k in packed_pars.keys():
+            if k == cls.density_name:
+                pars[cls.density_name] = packed_pars[cls.density_name]
+                continue
+
+            coord_name = k.split("_")[0]
+            par_name = "_".join(k.split("_")[1:])
+            if coord_name not in pars:
+                pars[coord_name] = {}
+            pars[coord_name][par_name] = packed_pars[k]
+
+        return pars
 
     ###################################################################################
     # Optimization
