@@ -1,4 +1,6 @@
 import abc
+import copy
+import inspect
 
 import jax
 import jax.numpy as jnp
@@ -10,21 +12,144 @@ from jax.scipy.special import logsumexp
 from .plot import _plot_projections
 
 
+class Normal1DSplineComponent:
+    param_names = ("mean", "ln_std")
+
+    def __init__(self, knots, bounds=None, param_bounds=None, spline_k=3):
+        """
+        Parameters:
+        -----------
+        knots : array-like
+            Array of spline knot locations (i.e. the "x" locations).
+        bounds : dict (optional)
+            A dictionary with two optional keys: "low" or "high" to specify the lower
+            and upper bounds of the component value (i.e. the "y" value bounds).
+        param_bounds : dict (optional)
+            A dictionary with keys set to any of the `param_names` to set prior bounds
+            on the parameter values.
+        spline_k : int (optional)
+            The spline polynomial degree. Default is 3 (cubic splines).
+        """
+        if param_bounds is None:
+            param_bounds = dict()
+
+        self.bounds = tuple(bounds)
+
+        self.spline_k = int(spline_k)
+        self.knots = jnp.array(knots)
+
+        # TODO: make this customizable?
+        self._endpoints = "not-a-knot"
+
+        # To be set when the model is initialized with set_params():
+        self.splines = {}
+
+    def set_params(self, params):
+        for name in self.param_names:
+            if name not in params:
+                raise ValueError(
+                    "You must pass in a value or numpyro dist for all parameters: "
+                    f"{self.param_names}"
+                )
+
+        for name in self.param_names:
+            self.splines[name] = InterpolatedUnivariateSpline(
+                self.knots,
+                params[name],
+                k=self.spline_k,
+                endpoints=self._endpoints,
+            )
+
+    def get_dist(self, eval_x):
+        return dist.TruncatedNormal(
+            loc=self.splines["mean"](eval_x),
+            scale=jnp.exp(self.splines["ln_std"](eval_x)),
+            low=self.bounds[0],
+            high=self.bounds[1],
+        )
+
+    def ln_prob(self, x, y):
+        d = self.get_dist(x)
+        return d.log_prob(y)
+
+
 class ModelBase(abc.ABC):
+    # Name of the parameter that controls the log-total number of stars
+    _num_name = "ln_N"
+
+    # The name of the model component (e.g., "steam" or "background"):
+    name = None  # required
+
+    # TODO: A dictionary of ...
+    components = None  # required
+
+    def __init__(self, pars, **kwargs):
+        """
+        Base class.
+
+        Parameters
+        ----------
+        pars : dict
+            A nested dictionary of either (a) numpyro distributions, or (b) parameter
+            values. The top-level keys should contain keys for `density_name` and all
+            `coord_names`. Parameters (values or dists) should be nested in
+            sub-dictionaries keyed by parameter name.
+        """
+
+        # Validate input params:
+        for name in self.coord_names + (self._num_name,):
+            if name not in pars:
+                raise ValueError(
+                    f"Expected coordinate name '{name}' in input parameters"
+                )
+
+        # store the input parameters, setup splines, and store data:
+        self.pars = pars
+
+        # TODO: instead, loop over components and set parameter values
+        # self.splines = self.get_splines(self.pars)
+        for name in self.coord_names:
+            self.components[name].set_params(pars[name])
+
+        self._setup_data(kwargs.get("data", None))
+
+    @property
+    def coord_names(self):
+        return list(self.components.keys())
+
+    def __init_subclass__(cls):
+        if cls.name is None:
+            raise ValueError(
+                "You must set a name for this model component using the `name` class "
+                "attribute."
+            )
+
+        if cls.components is None:
+            raise ValueError(
+                "You must define components for this model by defining the dictionary "
+                "`components` to contain keys for each coordinate to model and values "
+                "as instances of Component classes."
+            )
+
+        # Do this otherwise all subclasses will share the same mutables (i.e. dictionary
+        # or strings) and modifying one will modify all:
+        for name, thing in inspect.getmembers(cls):
+            if inspect.isfunction(thing) or inspect.ismethod(thing):
+                continue
+            elif name.startswith("_"):
+                continue
+            setattr(cls, name, copy.deepcopy(getattr(cls, name)))
+
+        # name value is required:
+        if not cls.__name__.endswith("Base") and cls.name is None:
+            raise ValueError("you must specify a model component name")
+
     ###################################################################################
-    # Required methods that must be implemented in subclasses:
+    # Methods that can be overridden in subclasses:
     #
-    @abc.abstractclassmethod
-    def setup_numpyro(cls):
-        pass
-
-    @abc.abstractmethod
-    def get_dists(self):
-        pass
-
     def extra_ln_prior(self):
         """
-        This one is optional.
+        TODO: describe why this would be useful
         """
         return 0.0
 
@@ -34,43 +159,63 @@ class ModelBase(abc.ABC):
     def _setup_data(self, data):
         # Note: data should be passed in / through by setup_numpyro(), but shouldn't be
         # passed as an argument when using the class otherwise:
-        self.data = data
+        self._data = data
 
         # Validate input data:
         for coord_name in self.coord_names:
-            if self.data is not None and coord_name not in self.data:
+            if self._data is not None and coord_name not in self._data:
                 raise ValueError(
                     f"Expected coordinate name '{coord_name}' in input data"
                 )
 
-        if self.data is not None:
+        if self._data is not None:
             # Compute the log of the effective volume integral, used in the poisson
             # process likelihood
-            ln_V = self.get_ln_V()
-            ln_n = self.ln_number_density(self.data)
-            numpyro.factor(f"V_{self.name}", -jnp.exp(ln_V))
+            ln_n = self.ln_number_density(self._data)
+            numpyro.factor(f"V_{self.name}", -self.get_N())
             numpyro.factor(f"ln_n_{self.name}", ln_n.sum())
             numpyro.factor(f"extra_prior_{self.name}", self.extra_ln_prior())
 
-    def ln_prob_density(self, data, return_terms=False):
-        """
-        TODO: only the prob. density of the likelihood
-        """
-        dists = self.get_dists(data)
+    @classmethod
+    def setup_numpyro(cls, data=None):
+        pars = {}
 
-        lls = {}
-        for k in self.coord_names:
-            lls[k] = dists[k].log_prob(data[k])
+        # ln_N = ln(total number of stars in this component)
+        pars["ln_N"] = numpyro.sample(f"ln_N_{cls.name}", cls.ln_N_dist)
 
-        if return_terms:
-            return lls
-        else:
-            return jnp.sum(jnp.array([v for v in lls.values()]), axis=0)
+        # TODO: need to also support cases when comp_name is a tuple??
+        for comp_name, comp in cls.components.items():
+            pars[comp_name] = {}
+            for par_name, prior in comp.priors.items():
+                pars[comp_name][par_name] = numpyro.sample(
+                    f"{cls.name}_{comp_name}_{par_name}",
+                    prior,
+                    sample_shape=prior.shape(),
+                )
 
-    def ln_number_density(self, data, return_terms=False):
+        return cls(pars=pars, data=data)
+
+    def component_ln_prob_density(self, data):
         """
-        WARNING: When return_terms=True, you can't sum the coordinate dimensions
+        The log-probability for each component (e.g., phi2, pm1, etc) evaluated at the
+        input data values.
         """
+        comp_ln_probs = {}
+        for comp_name, comp in self.components:
+            # TODO: method name?? log_prob vs. ln_prob in my style
+            comp_ln_probs[comp_name] = comp.log_prob(data[comp_name])
+        return comp_ln_probs
+
+    def ln_prob_density(self, data):
+        """
+        The total log-probability evaluated at the input data values.
+        """
+        comp_ln_probs = self.component_ln_prob_density(data)
+        return jnp.sum(jnp.array([v for v in comp_ln_probs.values()]), axis=0)
+
+    def ln_number_density(self, data):
+        # TODO: the thing I will want is to multiply p(phi1) by whatever component prob
+
         if return_terms:
             ln_probs = self.ln_prob_density(data, return_terms=True)
             ln_n0 = self.get_ln_n0(data)
@@ -85,7 +230,7 @@ class ModelBase(abc.ABC):
         """
         NOTE: This is the Poisson process likelihood
         """
-        ln_n = self.ln_number_density(data, return_terms=False)
+        ln_n = self.ln_prob_density(data)
         return -jnp.exp(self.get_ln_V()) + ln_n.sum()
 
     @classmethod
@@ -246,7 +391,7 @@ class ModelBase(abc.ABC):
         Remove the model component name from the parameter names of a packed parameter
         dictionary.
         """
-        return {k[: -(len(cls.name) + 1)]: v for k, v in packed_pars.items()}
+        return {k[len(cls.name) + 1 :]: v for k, v in packed_pars.items()}
 
     @classmethod
     def unpack_params(cls, packed_pars):
