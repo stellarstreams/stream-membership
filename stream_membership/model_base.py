@@ -12,76 +12,18 @@ from jax.scipy.special import logsumexp
 from .plot import _plot_projections
 
 
-class Normal1DSplineComponent:
-    param_names = ("mean", "ln_std")
-
-    def __init__(self, knots, bounds=None, param_bounds=None, spline_k=3):
-        """
-        Parameters:
-        -----------
-        knots : array-like
-            Array of spline knot locations (i.e. the "x" locations).
-        bounds : dict (optional)
-            A dictionary with two optional keys: "low" or "high" to specify the lower
-            and upper bounds of the component value (i.e. the "y" value bounds).
-        param_bounds : dict (optional)
-            A dictionary with keys set to any of the `param_names` to set prior bounds
-            on the parameter values.
-        spline_k : int (optional)
-            The spline polynomial degree. Default is 3 (cubic splines).
-        """
-        if param_bounds is None:
-            param_bounds = dict()
-
-        self.bounds = tuple(bounds)
-
-        self.spline_k = int(spline_k)
-        self.knots = jnp.array(knots)
-
-        # TODO: make this customizable?
-        self._endpoints = "not-a-knot"
-
-        # To be set when the model is initialized with set_params():
-        self.splines = {}
-
-    def set_params(self, params):
-        for name in self.param_names:
-            if name not in params:
-                raise ValueError(
-                    "You must pass in a value or numpyro dist for all parameters: "
-                    f"{self.param_names}"
-                )
-
-        for name in self.param_names:
-            self.splines[name] = InterpolatedUnivariateSpline(
-                self.knots,
-                params[name],
-                k=self.spline_k,
-                endpoints=self._endpoints,
-            )
-
-    def get_dist(self, eval_x):
-        return dist.TruncatedNormal(
-            loc=self.splines["mean"](eval_x),
-            scale=jnp.exp(self.splines["ln_std"](eval_x)),
-            low=self.bounds[0],
-            high=self.bounds[1],
-        )
-
-    def ln_prob(self, x, y):
-        d = self.get_dist(x)
-        return d.log_prob(y)
-
-
 class ModelBase(abc.ABC):
-    # Name of the parameter that controls the log-total number of stars
-    _num_name = "ln_N"
-
     # The name of the model component (e.g., "steam" or "background"):
     name = None  # required
 
     # TODO: A dictionary of ...
     components = None  # required
+
+    # TODO:
+    ln_N_dist = None  # required
+
+    # TODO: optional??
+    default_grids = None
 
     def __init__(self, pars, **kwargs):
         """
@@ -91,23 +33,22 @@ class ModelBase(abc.ABC):
         ----------
         pars : dict
             A nested dictionary of either (a) numpyro distributions, or (b) parameter
-            values. The top-level keys should contain keys for `density_name` and all
+            values. The top-level keys should contain keys for `ln_N` and all
             `coord_names`. Parameters (values or dists) should be nested in
             sub-dictionaries keyed by parameter name.
         """
 
         # Validate input params:
-        for name in self.coord_names + (self._num_name,):
+        for name in self.coord_names + ("ln_N",):
             if name not in pars:
                 raise ValueError(
                     f"Expected coordinate name '{name}' in input parameters"
                 )
 
         # store the input parameters, setup splines, and store data:
-        self.pars = pars
+        self._pars = pars
 
-        # TODO: instead, loop over components and set parameter values
-        # self.splines = self.get_splines(self.pars)
+        # loop over components and set parameter values
         for name in self.coord_names:
             self.components[name].set_params(pars[name])
 
@@ -195,6 +136,11 @@ class ModelBase(abc.ABC):
 
         return cls(pars=pars, data=data)
 
+    def get_N(self):
+        if self._pars is None:
+            return None
+        return jnp.exp(self._pars["ln_N"])
+
     def component_ln_prob_density(self, data):
         """
         The log-probability for each component (e.g., phi2, pm1, etc) evaluated at the
@@ -202,8 +148,7 @@ class ModelBase(abc.ABC):
         """
         comp_ln_probs = {}
         for comp_name, comp in self.components:
-            # TODO: method name?? log_prob vs. ln_prob in my style
-            comp_ln_probs[comp_name] = comp.log_prob(data[comp_name])
+            comp_ln_probs[comp_name] = comp.ln_prob(data["phi1"], data[comp_name])
         return comp_ln_probs
 
     def ln_prob_density(self, data):
@@ -213,18 +158,23 @@ class ModelBase(abc.ABC):
         comp_ln_probs = self.component_ln_prob_density(data)
         return jnp.sum(jnp.array([v for v in comp_ln_probs.values()]), axis=0)
 
+    def component_ln_number_density(self, data):
+        """
+        NOTE: This computes the log-number density of the joint distribution n(phi1, X)
+        where X is each component (e.g., phi2, pm1, etc.).
+        """
+        ln_probs = self.component_ln_prob_density(data)
+
+        # TODO: this bakes in phi1 as a special name
+        ln_prob_phi1 = ln_probs.pop("phi1")
+
+        for k in ln_probs.keys():
+            ln_probs[k] = self._pars["ln_N"] + ln_prob_phi1 + ln_probs[k]
+
+        return ln_probs
+
     def ln_number_density(self, data):
-        # TODO: the thing I will want is to multiply p(phi1) by whatever component prob
-
-        if return_terms:
-            ln_probs = self.ln_prob_density(data, return_terms=True)
-            ln_n0 = self.get_ln_n0(data)
-            ln_n = {k: ln_n0 + ln_probs[k] for k in ln_probs}
-        else:
-            ln_prob = self.ln_prob_density(data, return_terms=False)
-            ln_n = self.get_ln_n0(data) + ln_prob
-
-        return ln_n
+        return self._pars["ln_N"] + self.ln_prob_density(data)
 
     def ln_likelihood(self, data):
         """
@@ -237,6 +187,7 @@ class ModelBase(abc.ABC):
     def objective(cls, p, data):
         model = cls(p)
         ll = model.ln_likelihood(data)
+        # TODO: again, phi1 is a special name!
         return -ll / len(data["phi1"])
 
     ###################################################################################
@@ -248,6 +199,8 @@ class ModelBase(abc.ABC):
 
         if grids is None:
             grids = {}
+
+        # TODO: again, phi1 is a special name!
         for name in ("phi1",) + coord_names:
             if name not in grids and name not in self.default_grids:
                 raise ValueError(f"No default grid for {name}, so you must specify it")
@@ -277,7 +230,7 @@ class ModelBase(abc.ABC):
                 # TODO: hard-coded assumption that data errors are named _err
                 tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
 
-            ln_n = self.ln_number_density(tmp_data, return_terms=True)[name]
+            ln_n = self.component_ln_number_density(tmp_data, return_terms=True)[name]
             terms[name] = ln_n.reshape(grid1.shape)
             all_grids[name] = (grid1, grid2)
 
@@ -365,6 +318,8 @@ class ModelBase(abc.ABC):
     def clip_params(cls, pars):
         """
         Clip the input parameter values so that they are within the requisite bounds
+
+        TODO: what do about this? bounds have moved to the component classes
         """
         # TODO: tolerance MAGIC NUMBER 1e-2
         tol = 1e-2
@@ -404,8 +359,8 @@ class ModelBase(abc.ABC):
 
         pars = {}
         for k in packed_pars.keys():
-            if k == cls.density_name:
-                pars[cls.density_name] = packed_pars[cls.density_name]
+            if k == "ln_N":
+                pars["ln_N"] = packed_pars["ln_N"]
                 continue
 
             coord_name = k.split("_")[0]
