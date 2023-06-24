@@ -65,12 +65,17 @@ class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
         mixing_distribution,
         locs=0.0,
         scales=1.0,
-        low=-float("inf"),
-        high=float("inf"),
+        low=None,
+        high=None,
         *,
         validate_args=True,
     ):
         dist.mixtures._check_mixing_distribution(mixing_distribution)
+
+        if low is None:
+            low = -float("inf")
+        if high is None:
+            high = float("inf")
 
         batch_shape = lax.broadcast_shapes(jnp.shape(locs), jnp.shape(scales))
         if validate_args:
