@@ -1,15 +1,16 @@
 import jax.numpy as jnp
+import numpyro
 import numpyro.distributions as dist
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
-__all__ = ["Normal1DSplineComponent"]
+__all__ = ["Normal1DComponent", "Normal1DSplineComponent"]
 
 
 class ComponentBase:
     param_names = None
 
     def __init_subclass__(cls) -> None:
-        required_methods = ["set_params", "get_dist", "ln_prob"]
+        required_methods = ["get_dist"]
         for f in required_methods:
             if getattr(cls, f) is getattr(__class__, f):
                 raise ValueError(
@@ -24,38 +25,79 @@ class ComponentBase:
             )
         cls.param_names = tuple(cls.param_names)
 
-    def set_params(self):
-        raise NotImplementedError()
+    def __init__(self, coord_bounds=None):
+        """
+        Parameters:
+        -----------
+        coord_bounds : dict (optional)
+            A dictionary with two optional keys: "low" or "high" to specify the lower
+            and upper bounds of the component value (i.e. the "y" value bounds).
+        """
+
+        if coord_bounds is None:
+            coord_bounds = (None, None)
+        else:
+            coord_bounds = tuple(coord_bounds)
+        self.coord_bounds = coord_bounds
+
+        self.params = None
+
+    def set_params(self, pars, name_prefix=""):
+        """ """
+        self.params = {}
+        for name in self.param_names:
+            if name not in pars:
+                raise ValueError(
+                    "You must pass in a value or numpyro dist for all parameters: "
+                    f"{self.param_names}"
+                )
+
+            if isinstance(pars[name], dist.Distribution):
+                self.params[name] = numpyro.sample(
+                    f"{name_prefix}{name}",
+                    pars[name],
+                    # sample_shape=pars[name].shape(),
+                )
+            else:
+                self.params[name] = pars[name]
+
+        return self.params
 
     def get_dist(self):
         raise NotImplementedError()
 
-    def ln_prob(self):
-        raise NotImplementedError()
+    def ln_prob(self, y, *args, **kwargs):
+        d = self.get_dist(*args, **kwargs)
+        return d.log_prob(y)
+
+
+class Normal1DComponent(ComponentBase):
+    param_names = ("mean", "ln_std")
+
+    def get_dist(self):
+        return dist.TruncatedNormal(
+            loc=self.params["mean"],
+            scale=jnp.exp(self.params["ln_std"]),
+            low=self.coord_bounds[0],
+            high=self.coord_bounds[1],
+        )
 
 
 class Normal1DSplineComponent(ComponentBase):
     param_names = ("mean", "ln_std")
 
-    def __init__(self, knots, bounds=None, param_bounds=None, spline_k=3):
+    def __init__(self, knots, spline_k=3, coord_bounds=None):
         """
         Parameters:
         -----------
         knots : array-like
             Array of spline knot locations (i.e. the "x" locations).
-        bounds : dict (optional)
-            A dictionary with two optional keys: "low" or "high" to specify the lower
-            and upper bounds of the component value (i.e. the "y" value bounds).
-        param_bounds : dict (optional)
-            A dictionary with keys set to any of the `param_names` to set prior bounds
-            on the parameter values.
         spline_k : int (optional)
             The spline polynomial degree. Default is 3 (cubic splines).
+        coord_bounds : dict (optional)
+            A dictionary with two optional keys: "low" or "high" to specify the lower
+            and upper bounds of the component value (i.e. the "y" value bounds).
         """
-        if param_bounds is None:
-            param_bounds = dict()
-
-        self.bounds = tuple(bounds)
 
         self.spline_k = int(spline_k)
         self.knots = jnp.array(knots)
@@ -66,30 +108,29 @@ class Normal1DSplineComponent(ComponentBase):
         # To be set when the model is initialized with set_params():
         self.splines = {}
 
+        super().__init__(coord_bounds=coord_bounds)
+
     def set_params(self, params):
-        for name in self.param_names:
-            if name not in params:
-                raise ValueError(
-                    "You must pass in a value or numpyro dist for all parameters: "
-                    f"{self.param_names}"
-                )
+        pars = super().set_params(params)
 
         for name in self.param_names:
             self.splines[name] = InterpolatedUnivariateSpline(
                 self.knots,
-                params[name],
+                pars[name],
                 k=self.spline_k,
                 endpoints=self._endpoints,
             )
 
-    def get_dist(self, eval_x):
+    def get_dist(self, x):
         return dist.TruncatedNormal(
-            loc=self.splines["mean"](eval_x),
-            scale=jnp.exp(self.splines["ln_std"](eval_x)),
-            low=self.bounds[0],
-            high=self.bounds[1],
+            loc=self.splines["mean"](x),
+            scale=jnp.exp(self.splines["ln_std"](x)),
+            low=self.coord_bounds[0],
+            high=self.coord_bounds[1],
         )
 
-    def ln_prob(self, x, y):
-        d = self.get_dist(x)
-        return d.log_prob(y)
+
+# class GridGMM2DComponent(ComponentBase):
+#     param_names = ("ws",)
+
+#     # TODO:
