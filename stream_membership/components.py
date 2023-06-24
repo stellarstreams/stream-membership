@@ -3,7 +3,9 @@ import numpyro
 import numpyro.distributions as dist
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
-__all__ = ["Normal1DComponent", "Normal1DSplineComponent"]
+from .truncatedgridgmm import TruncatedGridGMM
+
+__all__ = ["Normal1DComponent", "Normal1DSplineComponent", "GridGMMComponent"]
 
 
 class ComponentBase:
@@ -130,7 +132,32 @@ class Normal1DSplineComponent(ComponentBase):
         )
 
 
-# class GridGMM2DComponent(ComponentBase):
-#     param_names = ("ws",)
+class GridGMMComponent(ComponentBase):
+    param_names = ("ws",)
 
-#     # TODO:
+    def __init__(self, locs, scales, coord_bounds=None):
+        """
+        Parameters:
+        -----------
+        locs : array-like
+        scales : array-like (optional)
+        coord_bounds : dict (optional)
+            A dictionary with two optional keys: "low" or "high" to specify the lower
+            and upper bounds of the component value (i.e. the "y" value bounds).
+        """
+        self.locs = jnp.array(locs)
+        self.scales = jnp.array(scales)
+        for name in ["locs", "scales"]:
+            if getattr(self, name).ndim != 2:
+                raise ValueError("locs and scales must be 2D arrays.")
+
+        super().__init__(coord_bounds=coord_bounds)
+
+    def get_dist(self):
+        return TruncatedGridGMM(
+            mixing_distribution=dist.Categorical(self.params["ws"]),
+            locs=self.locs,
+            scales=self.scales,
+            low=self.coord_bounds[0],
+            high=self.coord_bounds[1],
+        )

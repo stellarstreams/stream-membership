@@ -5,7 +5,7 @@ import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import Predictive
 
-from ..components import Normal1DComponent, Normal1DSplineComponent
+from ..components import GridGMMComponent, Normal1DComponent, Normal1DSplineComponent
 
 
 def test_normal1d():
@@ -79,3 +79,73 @@ def test_normal1dspline():
 
     predictive2 = Predictive(model2, num_samples=10)
     predictive2(jax.random.PRNGKey(1))
+
+
+def test_gridgmm1d():
+    # Using numeric values so this can be evaluated:
+    locs = np.array([[0], [1.0], [2.0]])
+    scales = np.linspace(0.1, 0.75, locs.shape[0]).reshape(locs.shape)
+
+    c = GridGMMComponent(locs=locs, scales=scales)
+    c.set_params({"ws": np.linspace(0.1, 1, locs.shape[0])})
+    c.ln_prob(np.array([0.5]))
+
+    grid = np.linspace(-1, 10, 128).reshape(-1, 1)
+    ln_vals = c.ln_prob(grid)
+    assert np.all(np.isfinite(ln_vals))
+
+
+def test_gridgmm2d():
+    # Using numeric values so this can be evaluated:
+    locs = np.array([[0, 0.0], [0.0, 1.0], [0.0, 2.0], [0.5, 0.75]])
+    scales = np.ones_like(locs)
+    scales[:, 0] = 0.25
+
+    c = GridGMMComponent(locs=locs, scales=scales)
+    c.set_params({"ws": np.ones(locs.shape[0])})
+    c.ln_prob(np.array([0.5, -0.3]))
+
+    grid = np.stack(np.meshgrid(np.linspace(-1, 1, 128), np.linspace(-1, 3, 129))).T
+    ln_vals = c.ln_prob(grid.reshape(-1, 2)).reshape(grid.shape[:-1])
+    assert np.all(np.isfinite(ln_vals))
+
+    # Do the same, but with coordinate bounds:
+    c = GridGMMComponent(
+        locs=locs,
+        scales=scales,
+        coord_bounds=(np.array([-0.5, 0.0]), np.array([0.5, 2.5])),
+    )
+    c.set_params({"ws": np.ones(locs.shape[0])})
+    c.ln_prob(np.array([0.5, -0.3]))
+
+    grid = np.stack(np.meshgrid(np.linspace(-1, 1, 128), np.linspace(-1, 3, 129))).T
+    ln_vals = c.ln_prob(grid.reshape(-1, 2)).reshape(grid.shape[:-1])
+    assert not np.all(np.isfinite(ln_vals))
+
+    # TODO: when I implement .sample() on GridGMMComponent, test it here.
+    # Using numpyro distributions for the parameters for deferred evaluation:
+    # def model():
+    #     c = GridGMMComponent(
+    #         locs=locs,
+    #         scales=scales,
+    #         coord_bounds=(np.array([-0.5, 0.0]), np.array([0.5, 2.5])),
+    #     )
+    #     c.set_params({"ws": np.ones(locs.shape[0])})
+    #     numpyro.sample("val", c.get_dist())
+
+    # predictive = Predictive(model, num_samples=10)
+    # predictive(jax.random.PRNGKey(1))
+
+    # # Test also truncated version:
+    # def model2():
+    #     c = Normal1DSplineComponent(knots, coord_bounds=(-0.5, 0.5))
+    #     c.set_params(
+    #         {
+    #             "mean": dist.Uniform(np.zeros_like(knots), np.ones_like(knots)),
+    #             "ln_std": dist.Normal(np.full_like(knots, 0.5), np.ones_like(knots)),
+    #         }
+    #     )
+    #     numpyro.sample("val", c.get_dist(np.linspace(1, 4, 12)))
+
+    # predictive2 = Predictive(model2, num_samples=10)
+    # predictive2(jax.random.PRNGKey(1))
