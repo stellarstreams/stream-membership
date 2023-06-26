@@ -27,13 +27,13 @@ class ComponentBase:
             )
         cls.param_names = tuple(cls.param_names)
 
-    def __init__(self, coord_bounds=None):
+    def __init__(self, param_priors, coord_bounds=None):
         """
         Parameters:
         -----------
-        coord_bounds : dict (optional)
-            A dictionary with two optional keys: "low" or "high" to specify the lower
-            and upper bounds of the component value (i.e. the "y" value bounds).
+        coord_bounds : tuple (optional)
+            An iterable with two elements to specify the lower and upper bounds of the
+            component value s (i.e. the "y" value bounds).
         """
 
         if coord_bounds is None:
@@ -42,44 +42,51 @@ class ComponentBase:
             coord_bounds = tuple(coord_bounds)
         self.coord_bounds = coord_bounds
 
-        self.params = None
+        if param_priors is None:
+            param_priors = {}
+        self.param_priors = dict(param_priors)
 
-    def set_params(self, pars, name_prefix=""):
-        """ """
-        self.params = {}
+        # to be filled below with parameter bounds
+        self._param_bounds = dict()
+
+        # check that all expected param names are specified:
         for name in self.param_names:
-            if name not in pars:
+            if name not in self.param_priors:
                 raise ValueError(
-                    "You must pass in a value or numpyro dist for all parameters: "
-                    f"{self.param_names}"
+                    f"Missing parameter: {name} - you must specify a prior for all "
+                    "parameters"
                 )
 
-            if isinstance(pars[name], dist.Distribution):
-                self.params[name] = numpyro.sample(
-                    f"{name_prefix}{name}",
-                    pars[name],
-                    # sample_shape=pars[name].shape(),
-                )
-            else:
-                self.params[name] = pars[name]
+            # bounds based on support of prior
+            lb = getattr(self.param_priors[name].support, "lower_bound", -jnp.inf)
+            ub = getattr(self.param_priors[name].support, "upper_bound", jnp.inf)
+            self._param_bounds[name] = (lb, ub)
 
-        return self.params
+    def setup_numpyro(self, name_prefix=""):
+        """ """
+        pars = {}
 
-    def get_dist(self):
+        # TODO: what if in both?
+        for name, prior in self.param_priors.items():
+            pars[name] = numpyro.sample(f"{name_prefix}{name}", prior)
+
+        return pars
+
+    def get_dist(self, params):
         raise NotImplementedError()
 
-    def ln_prob(self, y, *args, **kwargs):
-        d = self.get_dist(*args, **kwargs)
+    def ln_prob(self, params, y, *args, **kwargs):
+        d = self.get_dist(params, *args, **kwargs)
         return d.log_prob(y)
 
 
 class Normal1DComponent(ComponentBase):
     param_names = ("mean", "ln_std")
 
-    def get_dist(self):
+    def get_dist(self, params, *_, **__):
         return dist.TruncatedNormal(
-            loc=self.params["mean"],
-            scale=jnp.exp(self.params["ln_std"]),
+            loc=params["mean"],
+            scale=jnp.exp(params["ln_std"]),
             low=self.coord_bounds[0],
             high=self.coord_bounds[1],
         )
@@ -88,7 +95,7 @@ class Normal1DComponent(ComponentBase):
 class Normal1DSplineComponent(ComponentBase):
     param_names = ("mean", "ln_std")
 
-    def __init__(self, knots, spline_k=3, coord_bounds=None):
+    def __init__(self, param_priors, knots, spline_k=3, coord_bounds=None):
         """
         Parameters:
         -----------
@@ -96,9 +103,9 @@ class Normal1DSplineComponent(ComponentBase):
             Array of spline knot locations (i.e. the "x" locations).
         spline_k : int (optional)
             The spline polynomial degree. Default is 3 (cubic splines).
-        coord_bounds : dict (optional)
-            A dictionary with two optional keys: "low" or "high" to specify the lower
-            and upper bounds of the component value (i.e. the "y" value bounds).
+        coord_bounds : tuple (optional)
+            An iterable with two elements to specify the lower and upper bounds of the
+            component value s (i.e. the "y" value bounds).
         """
 
         self.spline_k = int(spline_k)
@@ -107,23 +114,19 @@ class Normal1DSplineComponent(ComponentBase):
         # TODO: make this customizable?
         self._endpoints = "not-a-knot"
 
-        # To be set when the model is initialized with set_params():
+        super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
+
+    def get_dist(self, params, x, *_, **__):
+        # TODO: I think this has to go here, and not in init
         self.splines = {}
-
-        super().__init__(coord_bounds=coord_bounds)
-
-    def set_params(self, params):
-        pars = super().set_params(params)
-
         for name in self.param_names:
             self.splines[name] = InterpolatedUnivariateSpline(
                 self.knots,
-                pars[name],
+                params[name],
                 k=self.spline_k,
                 endpoints=self._endpoints,
             )
 
-    def get_dist(self, x):
         return dist.TruncatedNormal(
             loc=self.splines["mean"](x),
             scale=jnp.exp(self.splines["ln_std"](x)),
@@ -135,27 +138,27 @@ class Normal1DSplineComponent(ComponentBase):
 class GridGMMComponent(ComponentBase):
     param_names = ("ws",)
 
-    def __init__(self, locs, scales, coord_bounds=None):
+    def __init__(self, param_priors, locs, scales, coord_bounds=None):
         """
         Parameters:
         -----------
         locs : array-like
         scales : array-like (optional)
-        coord_bounds : dict (optional)
-            A dictionary with two optional keys: "low" or "high" to specify the lower
-            and upper bounds of the component value (i.e. the "y" value bounds).
+        coord_bounds : tuple (optional)
+            An iterable with two elements to specify the lower and upper bounds of the
+            component value s (i.e. the "y" value bounds).
         """
         self.locs = jnp.array(locs)
         self.scales = jnp.array(scales)
         for name in ["locs", "scales"]:
             if getattr(self, name).ndim != 2:
-                raise ValueError("locs and scales must be 2D arrays.")
+                raise ValueError(f"{name} must be a 2D array.")
 
-        super().__init__(coord_bounds=coord_bounds)
+        super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
-    def get_dist(self):
+    def get_dist(self, params, x, *_, **__):
         return TruncatedGridGMM(
-            mixing_distribution=dist.Categorical(self.params["ws"]),
+            mixing_distribution=dist.Categorical(params["ws"]),
             locs=self.locs,
             scales=self.scales,
             low=self.coord_bounds[0],
