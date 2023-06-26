@@ -49,14 +49,14 @@ class ModelBase(abc.ABC):
         self._pars = pars
 
         # loop over components and set parameter values
-        for name in self.coord_names:
-            self.components[name].set_params(pars[name])
+        # for name in self.coord_names:
+        #     self.components[name].set_params(self._pars[name])
 
         self._setup_data(kwargs.get("data", None))
 
     @property
     def coord_names(self):
-        return list(self.components.keys())
+        return tuple(self.components.keys())
 
     def __init_subclass__(cls):
         if cls.name is None:
@@ -126,13 +126,18 @@ class ModelBase(abc.ABC):
 
         # TODO: need to also support cases when comp_name is a tuple??
         for comp_name, comp in cls.components.items():
-            pars[comp_name] = {}
-            for par_name, prior in comp.priors.items():
-                pars[comp_name][par_name] = numpyro.sample(
-                    f"{cls.name}_{comp_name}_{par_name}",
-                    prior,
-                    sample_shape=prior.shape(),
-                )
+            pars[comp_name] = comp.setup_numpyro(name_prefix=f"{comp_name}_")
+
+            # for par_name, prior in comp.params.items():
+            #     pars[comp_name][par_name] = numpyro.sample(
+            #         f"{cls.name}_{comp_name}_{par_name}",
+            #         prior,
+            #         sample_shape=prior.shape(),
+            #     )
+
+        # TODO: could remove setup_data from init and do this instead:
+        # obj = cls(pars=pars)
+        # obj._setup_data(data)
 
         return cls(pars=pars, data=data)
 
@@ -147,8 +152,10 @@ class ModelBase(abc.ABC):
         input data values.
         """
         comp_ln_probs = {}
-        for comp_name, comp in self.components:
-            comp_ln_probs[comp_name] = comp.ln_prob(data["phi1"], data[comp_name])
+        for comp_name, comp in self.components.items():
+            comp_ln_probs[comp_name] = comp.ln_prob(
+                params=self._pars[comp_name], y=data[comp_name], x=data["phi1"]
+            )
         return comp_ln_probs
 
     def ln_prob_density(self, data):
@@ -180,8 +187,7 @@ class ModelBase(abc.ABC):
         """
         NOTE: This is the Poisson process likelihood
         """
-        ln_n = self.ln_prob_density(data)
-        return -jnp.exp(self.get_ln_V()) + ln_n.sum()
+        return -self.get_N() + self.ln_number_density(data).sum()
 
     @classmethod
     def objective(cls, p, data):
@@ -417,24 +423,19 @@ class ModelBase(abc.ABC):
     def _get_jaxopt_bounds(cls):
         bounds_l = {}
         bounds_h = {}
-        for k, bounds in cls.param_bounds.items():
-            if k != "ln_n0" and k not in cls.coord_names:
-                continue
 
-            if isinstance(bounds, dict):
-                bounds_l[k] = {}
-                bounds_h[k] = {}
-                for par_name, sub_bounds in bounds.items():
-                    bounds_l[k][par_name] = jnp.full(
-                        cls.shapes[k][par_name], sub_bounds[0]
-                    )
-                    bounds_h[k][par_name] = jnp.full(
-                        cls.shapes[k][par_name], sub_bounds[1]
-                    )
+        # ln_N special case
+        bounds_l["ln_N"] = getattr(cls.ln_N_dist.support, "lower_bound", -jnp.inf)
+        bounds_h["ln_N"] = getattr(cls.ln_N_dist.support, "upper_bound", jnp.inf)
 
-            else:
-                bounds_l[k] = jnp.full(cls.shapes[k], bounds[0])
-                bounds_h[k] = jnp.full(cls.shapes[k], bounds[1])
+        for k, comp in cls.components.items():
+            bounds = comp._param_bounds
+
+            bounds_l[k] = {}
+            bounds_h[k] = {}
+            for par_name, sub_bounds in bounds.items():
+                bounds_l[k][par_name] = sub_bounds[0]
+                bounds_h[k][par_name] = sub_bounds[1]
 
         return (bounds_l, bounds_h)
 
