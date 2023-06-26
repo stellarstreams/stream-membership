@@ -16,7 +16,7 @@ class ModelBase(abc.ABC):
     # The name of the model component (e.g., "steam" or "background"):
     name = None  # required
 
-    # TODO: A dictionary of ...
+    # A dictionary of coordinate names and corresponding model terms
     components = None  # required
 
     # TODO:
@@ -25,7 +25,7 @@ class ModelBase(abc.ABC):
     # TODO: optional??
     default_grids = None
 
-    def __init__(self, pars, **kwargs):
+    def __init__(self, pars):
         """
         Base class.
 
@@ -45,14 +45,8 @@ class ModelBase(abc.ABC):
                     f"Expected coordinate name '{name}' in input parameters"
                 )
 
-        # store the input parameters, setup splines, and store data:
+        # store the inputted parameters
         self._pars = pars
-
-        # loop over components and set parameter values
-        # for name in self.coord_names:
-        #     self.components[name].set_params(self._pars[name])
-
-        self._setup_data(kwargs.get("data", None))
 
     @property
     def coord_names(self):
@@ -97,26 +91,6 @@ class ModelBase(abc.ABC):
     ###################################################################################
     # Shared methods for any density model component (or mixture):
     #
-    def _setup_data(self, data):
-        # Note: data should be passed in / through by setup_numpyro(), but shouldn't be
-        # passed as an argument when using the class otherwise:
-        self._data = data
-
-        # Validate input data:
-        for coord_name in self.coord_names:
-            if self._data is not None and coord_name not in self._data:
-                raise ValueError(
-                    f"Expected coordinate name '{coord_name}' in input data"
-                )
-
-        if self._data is not None:
-            # Compute the log of the effective volume integral, used in the poisson
-            # process likelihood
-            ln_n = self.ln_number_density(self._data)
-            numpyro.factor(f"V_{self.name}", -self.get_N())
-            numpyro.factor(f"ln_n_{self.name}", ln_n.sum())
-            numpyro.factor(f"extra_prior_{self.name}", self.extra_ln_prior())
-
     @classmethod
     def setup_numpyro(cls, data=None):
         pars = {}
@@ -128,18 +102,17 @@ class ModelBase(abc.ABC):
         for comp_name, comp in cls.components.items():
             pars[comp_name] = comp.setup_numpyro(name_prefix=f"{comp_name}_")
 
-            # for par_name, prior in comp.params.items():
-            #     pars[comp_name][par_name] = numpyro.sample(
-            #         f"{cls.name}_{comp_name}_{par_name}",
-            #         prior,
-            #         sample_shape=prior.shape(),
-            #     )
+        obj = cls(pars=pars)
 
-        # TODO: could remove setup_data from init and do this instead:
-        # obj = cls(pars=pars)
-        # obj._setup_data(data)
+        if data is not None:
+            # Compute the log of the effective volume integral, used in the poisson
+            # process likelihood
+            ln_n = obj.ln_number_density(data)
+            numpyro.factor(f"V_{cls.name}", -obj.get_N())
+            numpyro.factor(f"ln_n_{cls.name}", ln_n.sum())
+            numpyro.factor(f"extra_prior_{cls.name}", obj.extra_ln_prior())
 
-        return cls(pars=pars, data=data)
+        return obj
 
     def get_N(self):
         if self._pars is None:
@@ -440,171 +413,171 @@ class ModelBase(abc.ABC):
         return (bounds_l, bounds_h)
 
 
-class StreamMixtureModel(ModelBase):
-    name = "mixture"
+# class MixtureModel(ModelBase):
+#     name = "mixture"
 
-    def __init__(self, components, **kwargs):
-        self.coord_names = None
+#     def __init__(self, components, **kwargs):
+#         self.coord_names = None
 
-        self.components = list(components)
-        if len(self.components) < 1:
-            raise ValueError("You must pass at least one component")
+#         self.components = list(components)
+#         if len(self.components) < 1:
+#             raise ValueError("You must pass at least one component")
 
-        for component in self.components:
-            if self.coord_names is None:
-                self.coord_names = tuple(component.coord_names)
-            else:
-                if self.coord_names != tuple(component.coord_names):
-                    raise ValueError("TODO")
+#         for component in self.components:
+#             if self.coord_names is None:
+#                 self.coord_names = tuple(component.coord_names)
+#             else:
+#                 if self.coord_names != tuple(component.coord_names):
+#                     raise ValueError("TODO")
 
-        # TODO: same for default grids
-        self.default_grids = component.default_grids
+#         # TODO: same for default grids
+#         self.default_grids = component.default_grids
 
-        self._setup_data(kwargs.get("data", None))
+#         self._setup_data(kwargs.get("data", None))
 
-    @classmethod
-    def setup_numpyro(cls, Components, data=None):
-        components = []  # instances
-        for Component in Components:
-            components.append(Component.setup_numpyro(data=None))
-        return cls(components, data=data)
+#     @classmethod
+#     def setup_numpyro(cls, Components, data=None):
+#         components = []  # instances
+#         for Component in Components:
+#             components.append(Component.setup_numpyro(data=None))
+#         return cls(components, data=data)
 
-    def get_ln_n0(self, data, return_total=True):
-        ln_n0s = jnp.array([c.get_ln_n0(data) for c in self.components])
-        if return_total:
-            return logsumexp(ln_n0s, axis=0)
-        else:
-            return ln_n0s
+#     def get_ln_n0(self, data, return_total=True):
+#         ln_n0s = jnp.array([c.get_ln_n0(data) for c in self.components])
+#         if return_total:
+#             return logsumexp(ln_n0s, axis=0)
+#         else:
+#             return ln_n0s
 
-    def get_ln_V(self, return_total=True):
-        terms = jnp.array([c.get_ln_V() for c in self.components])
-        if return_total:
-            return logsumexp(terms, axis=0)
-        else:
-            return terms
+#     def get_ln_V(self, return_total=True):
+#         terms = jnp.array([c.get_ln_V() for c in self.components])
+#         if return_total:
+#             return logsumexp(terms, axis=0)
+#         else:
+#             return terms
 
-    def get_dists(self, data):
-        # TODO: this only works for 2D marginals!
-        all_dists = [c.get_dists(data) for c in self.components]
+#     def get_dists(self, data):
+#         # TODO: this only works for 2D marginals!
+#         all_dists = [c.get_dists(data) for c in self.components]
 
-        ln_n0s = self.get_ln_n0(data, return_total=False)
-        total_ln_n0 = logsumexp(ln_n0s, axis=0)
-        mix = dist.Categorical(
-            probs=jnp.array([jnp.exp(ln_n0 - total_ln_n0) for ln_n0 in ln_n0s]).T
-        )
+#         ln_n0s = self.get_ln_n0(data, return_total=False)
+#         total_ln_n0 = logsumexp(ln_n0s, axis=0)
+#         mix = dist.Categorical(
+#             probs=jnp.array([jnp.exp(ln_n0 - total_ln_n0) for ln_n0 in ln_n0s]).T
+#         )
 
-        dists = {}
-        for coord_name in self.coord_names:
-            dists[coord_name] = dist.MixtureGeneral(
-                mix,
-                [tmp_dists[coord_name] for tmp_dists in all_dists],
-            )
+#         dists = {}
+#         for coord_name in self.coord_names:
+#             dists[coord_name] = dist.MixtureGeneral(
+#                 mix,
+#                 [tmp_dists[coord_name] for tmp_dists in all_dists],
+#             )
 
-        return dists
+#         return dists
 
-    def ln_prob_density(self, data, return_terms=False):
-        ln_n = self.ln_number_density(data, return_terms)
-        total_ln_n0 = self.get_ln_n0(data, return_total=True)
-        return ln_n - total_ln_n0
+#     def ln_prob_density(self, data, return_terms=False):
+#         ln_n = self.ln_number_density(data, return_terms)
+#         total_ln_n0 = self.get_ln_n0(data, return_total=True)
+#         return ln_n - total_ln_n0
 
-    def ln_number_density(self, data, return_terms=False):
-        if return_terms:
-            raise NotImplementedError("Sorry")
+#     def ln_number_density(self, data, return_terms=False):
+#         if return_terms:
+#             raise NotImplementedError("Sorry")
 
-        ln_n0s = self.get_ln_n0(data, return_total=False)
+#         ln_n0s = self.get_ln_n0(data, return_total=False)
 
-        ln_ns = []
-        for c, ln_n0 in zip(self.components, ln_n0s):
-            ln_ns.append(ln_n0 + c.ln_prob_density(data, return_terms=False))
+#         ln_ns = []
+#         for c, ln_n0 in zip(self.components, ln_n0s):
+#             ln_ns.append(ln_n0 + c.ln_prob_density(data, return_terms=False))
 
-        return logsumexp(jnp.array(ln_ns), axis=0)
+#         return logsumexp(jnp.array(ln_ns), axis=0)
 
-    @classmethod
-    def objective(cls, p, Components, data):
-        models = {C.name: C(p[C.name]) for C in Components}
+#     @classmethod
+#     def objective(cls, p, Components, data):
+#         models = {C.name: C(p[C.name]) for C in Components}
 
-        ln_ns = jnp.array([model.ln_number_density(data) for model in models.values()])
-        ln_n = logsumexp(ln_ns, axis=0)
+#         ln_ns = jnp.array([model.ln_number_density(data) for model in models.values()])
+#         ln_n = logsumexp(ln_ns, axis=0)
 
-        V = jnp.sum(jnp.array([jnp.exp(model.get_ln_V()) for model in models.values()]))
+#         V = jnp.sum(jnp.array([jnp.exp(model.get_ln_V()) for model in models.values()]))
 
-        ll = -V + ln_n.sum()
+#         ll = -V + ln_n.sum()
 
-        return -ll / len(data["phi1"])
+#         return -ll / len(data["phi1"])
 
-    @classmethod
-    def unpack_params(cls, pars, Components):
-        pars_unpacked = {}
-        for C in Components:
-            pars_unpacked[C.name] = {}
+#     @classmethod
+#     def unpack_params(cls, pars, Components):
+#         pars_unpacked = {}
+#         for C in Components:
+#             pars_unpacked[C.name] = {}
 
-        for par_name, par in pars.items():
-            for C in Components:
-                if par_name.endswith(C.name):
-                    pars_unpacked[C.name][par_name] = par
-                    break
-        for C in Components:
-            pars_unpacked[C.name] = C.unpack_params(pars_unpacked[C.name])
-        return pars_unpacked
+#         for par_name, par in pars.items():
+#             for C in Components:
+#                 if par_name.endswith(C.name):
+#                     pars_unpacked[C.name][par_name] = par
+#                     break
+#         for C in Components:
+#             pars_unpacked[C.name] = C.unpack_params(pars_unpacked[C.name])
+#         return pars_unpacked
 
-    def evaluate_on_grids(self, grids=None, coord_names=None):
-        if coord_names is None:
-            coord_names = self.coord_names
-        if grids is None:
-            grids = self.default_grids
-        grids = self._get_grids_dict(grids, coord_names)
+#     def evaluate_on_grids(self, grids=None, coord_names=None):
+#         if coord_names is None:
+#             coord_names = self.coord_names
+#         if grids is None:
+#             grids = self.default_grids
+#         grids = self._get_grids_dict(grids, coord_names)
 
-        all_grids = {}
-        terms = {}
-        for name in coord_names:
-            grid1, grid2 = np.meshgrid(grids["phi1"], grids[name])
+#         all_grids = {}
+#         terms = {}
+#         for name in coord_names:
+#             grid1, grid2 = np.meshgrid(grids["phi1"], grids[name])
 
-            # Fill a data dict with zeros for all coordinates not being plotted
-            # TODO: this is a hack and we take a performance hit for this because we
-            # unnecessarily compute log-probs at nonsense values
-            tmp_data = {"phi1": grid1.ravel()}
-            for tmp_name in coord_names:
-                if tmp_name == name:
-                    tmp_data[tmp_name] = grid2.ravel()
-                else:
-                    tmp_data[tmp_name] = jnp.zeros_like(grid1.ravel())
-                # TODO: hard-coded assumption that data errors are named _err
-                tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
+#             # Fill a data dict with zeros for all coordinates not being plotted
+#             # TODO: this is a hack and we take a performance hit for this because we
+#             # unnecessarily compute log-probs at nonsense values
+#             tmp_data = {"phi1": grid1.ravel()}
+#             for tmp_name in coord_names:
+#                 if tmp_name == name:
+#                     tmp_data[tmp_name] = grid2.ravel()
+#                 else:
+#                     tmp_data[tmp_name] = jnp.zeros_like(grid1.ravel())
+#                 # TODO: hard-coded assumption that data errors are named _err
+#                 tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
 
-            ln_ns = [
-                c.ln_number_density(tmp_data, return_terms=True)[name]
-                for c in self.components
-            ]
-            ln_n = logsumexp(jnp.array(ln_ns), axis=0)
-            terms[name] = ln_n.reshape(grid1.shape)
-            all_grids[name] = (grid1, grid2)
+#             ln_ns = [
+#                 c.ln_number_density(tmp_data, return_terms=True)[name]
+#                 for c in self.components
+#             ]
+#             ln_n = logsumexp(jnp.array(ln_ns), axis=0)
+#             terms[name] = ln_n.reshape(grid1.shape)
+#             all_grids[name] = (grid1, grid2)
 
-        return all_grids, terms
+#         return all_grids, terms
 
-    def plot_knots(self, axes=None, **kwargs):
-        if axes is None:
-            import matplotlib.pyplot as plt
+#     def plot_knots(self, axes=None, **kwargs):
+#         if axes is None:
+#             import matplotlib.pyplot as plt
 
-            _, axes = plt.subplots(
-                len(self.coord_names) + 1,
-                len(self.components),
-                figsize=(6 * len(self.components), 3 * (len(self.coord_names) + 1)),
-                sharex=True,
-                constrained_layout=True,
-            )
+#             _, axes = plt.subplots(
+#                 len(self.coord_names) + 1,
+#                 len(self.components),
+#                 figsize=(6 * len(self.components), 3 * (len(self.coord_names) + 1)),
+#                 sharex=True,
+#                 constrained_layout=True,
+#             )
 
-        for i, c in enumerate(self.components):
-            c.plot_knots(axes=axes[:, i], **kwargs)
+#         for i, c in enumerate(self.components):
+#             c.plot_knots(axes=axes[:, i], **kwargs)
 
-        return np.array(axes).flat[0].figure, axes
+#         return np.array(axes).flat[0].figure, axes
 
-    @classmethod
-    def _get_jaxopt_bounds(cls, Components):
-        bounds_l = {}
-        bounds_h = {}
-        for Model in Components:
-            _bounds = Model._get_jaxopt_bounds()
-            bounds_l[Model.name] = _bounds[0]
-            bounds_h[Model.name] = _bounds[1]
-        bounds = (bounds_l, bounds_h)
-        return bounds
+#     @classmethod
+#     def _get_jaxopt_bounds(cls, Components):
+#         bounds_l = {}
+#         bounds_h = {}
+#         for Model in Components:
+#             _bounds = Model._get_jaxopt_bounds()
+#             bounds_l[Model.name] = _bounds[0]
+#             bounds_h[Model.name] = _bounds[1]
+#         bounds = (bounds_l, bounds_h)
+#         return bounds
