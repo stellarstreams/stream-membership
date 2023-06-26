@@ -1,8 +1,10 @@
 import jax
+import jax.numpy as jnp
 import jaxopt
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
+from numpyro import infer
 
 from .. import ModelBase
 from ..components import Normal1DComponent
@@ -107,3 +109,27 @@ def test_subclass():
                 assert np.allclose(opt_pars[k][par_name], truth[par_name], atol=0.1)
         else:
             assert np.allclose(opt_pars[k], truth, rtol=1e-2)
+
+    # Now try sampling:
+    nchains = 2
+
+    rng = np.random.default_rng(seed=42)
+
+    leaves, tree_def = jax.tree_util.tree_flatten(params0)
+    chain_leaves = []
+    for leaf in leaves:
+        leaf = np.atleast_1d(leaf)
+        arr = jnp.reshape(leaf, (1,) + leaf.shape)
+        arr = arr + rng.normal(0, 1e-3, size=(nchains,) + leaf.shape)
+        chain_leaves.append(arr)
+    chain_params0 = jax.tree_util.tree_unflatten(tree_def, chain_leaves)
+
+    sampler = infer.MCMC(
+        infer.NUTS(TestModel.setup_numpyro),
+        num_warmup=1000,
+        num_samples=1000,
+        num_chains=nchains,
+        progress_bar=False,
+    )
+    sampler.run(jax.random.PRNGKey(0), data=data, init_params=chain_params0)
+    print(sampler.get_samples())
