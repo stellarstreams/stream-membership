@@ -73,13 +73,15 @@ def test_gridgmm1d():
 
     c = GridGMMVariable(
         param_priors={
-            "ws": dist.Uniform(jnp.zeros(locs.shape[0]), jnp.ones(locs.shape[0]))
+            "zs": dist.Uniform(
+                -jnp.ones(locs.shape[0] - 1), jnp.ones(locs.shape[0] - 1)
+            )
         },
         locs=locs,
         scales=scales,
     )
 
-    params = {"ws": np.linspace(0.1, 1, locs.shape[0])}
+    params = {"zs": np.linspace(0.1, 0.9, locs.shape[0] - 1)}
     c.ln_prob(params, np.array([0.5]))
 
     grid = np.linspace(-1, 10, 128).reshape(-1, 1)
@@ -95,13 +97,15 @@ def test_gridgmm2d():
 
     c = GridGMMVariable(
         param_priors={
-            "ws": dist.Uniform(jnp.zeros(locs.shape[0]), jnp.ones(locs.shape[0]))
+            "zs": dist.Uniform(
+                -jnp.ones(locs.shape[0] - 1), jnp.ones(locs.shape[0] - 1)
+            )
         },
         locs=locs,
         scales=scales,
     )
 
-    params = {"ws": np.ones(locs.shape[0])}
+    params = {"zs": np.ones(locs.shape[0] - 1) / 2}
     c.ln_prob(params, np.array([0.5, -0.3]))
 
     grid = np.stack(np.meshgrid(np.linspace(-1, 1, 128), np.linspace(-1, 3, 129))).T
@@ -111,14 +115,16 @@ def test_gridgmm2d():
     # Do the same, but with coordinate bounds:
     c = GridGMMVariable(
         param_priors={
-            "ws": dist.Uniform(jnp.zeros(locs.shape[0]), jnp.ones(locs.shape[0]))
+            "zs": dist.Uniform(
+                -jnp.ones(locs.shape[0] - 1), jnp.ones(locs.shape[0] - 1)
+            )
         },
         locs=locs,
         scales=scales,
         coord_bounds=(np.array([-0.5, 0.0]), np.array([0.5, 2.5])),
     )
 
-    params = {"ws": np.ones(locs.shape[0])}
+    params = {"zs": np.ones(locs.shape[0] - 1) / 2}
     c.ln_prob(params, np.array([0.5, -0.3]))
 
     grid = np.stack(np.meshgrid(np.linspace(-1, 1, 128), np.linspace(-1, 3, 129))).T
