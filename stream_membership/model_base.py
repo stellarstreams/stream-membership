@@ -17,7 +17,7 @@ class ModelBase(abc.ABC):
     name = None  # required
 
     # A dictionary of coordinate names and corresponding model terms
-    components = None  # required
+    variables = None  # required
 
     # TODO:
     ln_N_dist = None  # required
@@ -50,7 +50,7 @@ class ModelBase(abc.ABC):
 
     @property
     def coord_names(self):
-        return tuple(self.components.keys())
+        return tuple(self.variables.keys())
 
     def __init_subclass__(cls):
         if cls.name is None:
@@ -59,10 +59,10 @@ class ModelBase(abc.ABC):
                 "attribute."
             )
 
-        if cls.components is None:
+        if cls.variables is None:
             raise ValueError(
-                "You must define components for this model by defining the dictionary "
-                "`components` to contain keys for each coordinate to model and values "
+                "You must define variables for this model by defining the dictionary "
+                "`variables` to contain keys for each coordinate to model and values "
                 "as instances of Component classes."
             )
 
@@ -99,7 +99,7 @@ class ModelBase(abc.ABC):
         pars["ln_N"] = numpyro.sample(f"ln_N_{cls.name}", cls.ln_N_dist)
 
         # TODO: need to also support cases when comp_name is a tuple??
-        for comp_name, comp in cls.components.items():
+        for comp_name, comp in cls.variables.items():
             pars[comp_name] = comp.setup_numpyro(name_prefix=f"{comp_name}_")
 
         obj = cls(pars=pars)
@@ -125,7 +125,8 @@ class ModelBase(abc.ABC):
         input data values.
         """
         comp_ln_probs = {}
-        for comp_name, comp in self.components.items():
+        for comp_name, comp in self.variables.items():
+            # TODO: the core issue is how to determine which data values to pass in here
             comp_ln_probs[comp_name] = comp.ln_prob(
                 params=self._pars[comp_name], y=data[comp_name], x=data["phi1"]
             )
@@ -294,32 +295,6 @@ class ModelBase(abc.ABC):
     # Utilities for manipulating parameters
     #
     @classmethod
-    def clip_params(cls, pars):
-        """
-        Clip the input parameter values so that they are within the requisite bounds
-
-        TODO: what do about this? bounds have moved to the component classes
-        """
-        # TODO: tolerance MAGIC NUMBER 1e-2
-        tol = 1e-2
-
-        new_pars = {}
-        new_pars[cls.density_name] = jnp.clip(
-            pars[cls.density_name],
-            cls.param_bounds[cls.density_name][0] + tol,
-            cls.param_bounds[cls.density_name][1] - tol,
-        )
-        for coord_name in cls.coord_names:
-            new_pars[coord_name] = {}
-            for par_name in cls.param_bounds[coord_name]:
-                new_pars[coord_name][par_name] = jnp.clip(
-                    pars[coord_name][par_name],
-                    cls.param_bounds[coord_name][par_name][0] + tol,
-                    cls.param_bounds[coord_name][par_name][1] - tol,
-                )
-        return new_pars
-
-    @classmethod
     def _strip_model_name(cls, packed_pars):
         """
         Remove the model component name from the parameter names of a packed parameter
@@ -401,7 +376,7 @@ class ModelBase(abc.ABC):
         bounds_l["ln_N"] = getattr(cls.ln_N_dist.support, "lower_bound", -jnp.inf)
         bounds_h["ln_N"] = getattr(cls.ln_N_dist.support, "upper_bound", jnp.inf)
 
-        for k, comp in cls.components.items():
+        for k, comp in cls.variables.items():
             bounds = comp._param_bounds
 
             bounds_l[k] = {}
