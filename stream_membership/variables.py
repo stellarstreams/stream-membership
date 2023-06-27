@@ -117,6 +117,8 @@ class Normal1DSplineVariable(VariableBase):
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
     def get_dist(self, params, x, *_, **__):
+        # TODO: can we check if shape of params is len(knots) or single value, and only
+        # do spline if it's the former?
         # TODO: I think this has to go here, and not in init
         self.splines = {}
         for name in self.param_names:
@@ -156,7 +158,7 @@ class GridGMMVariable(VariableBase):
 
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
-    def get_dist(self, params, x, *_, **__):
+    def get_dist(self, params, *_, **__):
         return TruncatedGridGMM(
             mixing_distribution=dist.Categorical(params["ws"]),
             locs=self.locs,
