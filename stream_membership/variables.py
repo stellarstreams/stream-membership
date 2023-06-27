@@ -138,7 +138,7 @@ class Normal1DSplineVariable(VariableBase):
 
 
 class GridGMMVariable(VariableBase):
-    param_names = ("ws",)
+    param_names = ("zs",)
 
     def __init__(self, param_priors, locs, scales, coord_bounds=None):
         """
@@ -158,9 +158,11 @@ class GridGMMVariable(VariableBase):
 
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
+        self._stick = dist.transforms.StickBreakingTransform()
+
     def get_dist(self, params, *_, **__):
         return TruncatedGridGMM(
-            mixing_distribution=dist.Categorical(probs=params["ws"]),
+            mixing_distribution=dist.Categorical(probs=self._stick(params["zs"])),
             locs=self.locs,
             scales=self.scales,
             low=self.coord_bounds[0],
