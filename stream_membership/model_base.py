@@ -13,31 +13,34 @@ from .plot import _plot_projections
 
 
 class ModelBase(abc.ABC):
-    # The name of the model component (e.g., "steam" or "background"):
-    name = None  # override required
+    # Required: The name of the model component (e.g., "steam" or "background"):
+    name = None
 
-    # A dictionary of coordinate names and corresponding model terms
-    variables = None  # override required
+    # Required: A dictionary of coordinate names and corresponding Variable instances:
+    variables = None
 
+    # Required: A numpyro Distribution for the number of objects in this component:
+    ln_N_dist = None
+
+    # Optional: A dictionary of additional coordinate names to be passed to the
+    # ln_prob() call when calling Variable.ln_prob(). For example, for a
+    # Normal1DSplineVariable, the ln_prob() requires knowing the "x" values to evaluate
+    # the spline at, so this might be {"pm1": {"x": "phi1", "y": "pm1"}}.
     data_required = None  # override optional
 
-    # TODO:
-    ln_N_dist = None  # override required
-
-    # TODO: optional??
+    # Optional: A dictionary of default grids to use when plotting each coordinate:
     default_grids = None
 
     def __init__(self, pars):
         """
-        Base class.
-
         Parameters
         ----------
         pars : dict
-            A nested dictionary of either (a) numpyro distributions, or (b) parameter
-            values. The top-level keys should contain keys for `ln_N` and all
-            `coord_names`. Parameters (values or dists) should be nested in
-            sub-dictionaries keyed by parameter name.
+            A nested dictionary of parameter values, which can either be values or a
+            result of `numpyro.sample()` calls. The top-level keys should contain keys
+            for `ln_N` and all `coord_names` (i.e. all keys of `.variables`). Parameters
+            (values or dists) should be nested in sub-dictionaries keyed by parameter
+            name.
         """
 
         # Validate input params:
@@ -110,7 +113,8 @@ class ModelBase(abc.ABC):
     #
     def extra_ln_prior(self):
         """
-        TODO: describe why this would be useful
+        A log-prior to add to the total log-probability. This is useful for adding
+        custom priors or regularizations that are not part of the model components.
         """
         return 0.0
 
@@ -134,9 +138,9 @@ class ModelBase(abc.ABC):
             # Compute the log of the effective volume integral, used in the poisson
             # process likelihood
             ln_n = obj.ln_number_density(data)
-            numpyro.factor(f"{cls.name}-V", -obj.get_N())
-            numpyro.factor(f"{cls.name}-ln_n", ln_n.sum())
-            numpyro.factor(f"{cls.name}-extra_prior", obj.extra_ln_prior())
+            numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())
+            numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
+            numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior())
 
         return obj
 
@@ -331,36 +335,36 @@ class ModelBase(abc.ABC):
                 out[k] = v
         return out
 
-    @classmethod
-    def _strip_model_name(cls, packed_pars):
-        """
-        Remove the model component name from the parameter names of a packed parameter
-        dictionary.
-        """
-        return {k[len(cls.name) + 1 :]: v for k, v in packed_pars.items()}
+    # @classmethod
+    # def _strip_model_name(cls, packed_pars):
+    #     """
+    #     Remove the model component name from the parameter names of a packed parameter
+    #     dictionary.
+    #     """
+    #     return {k[len(cls.name) + 1 :]: v for k, v in packed_pars.items()}
 
-    @classmethod
-    def unpack_params(cls, packed_pars):
-        """
-        Unpack a flat dictionary of parameters -- where keys have coordinate name,
-        parameter name, and model component name -- into a nested dictionary with
-        parameters grouped by coordinate name
-        """
-        packed_pars = cls._strip_model_name(packed_pars)
+    # @classmethod
+    # def unpack_params(cls, packed_pars):
+    #     """
+    #     Unpack a flat dictionary of parameters -- where keys have coordinate name,
+    #     parameter name, and model component name -- into a nested dictionary with
+    #     parameters grouped by coordinate name
+    #     """
+    #     packed_pars = cls._strip_model_name(packed_pars)
 
-        pars = {}
-        for k in packed_pars.keys():
-            if k == "ln_N":
-                pars["ln_N"] = packed_pars["ln_N"]
-                continue
+    #     pars = {}
+    #     for k in packed_pars.keys():
+    #         if k == "ln_N":
+    #             pars["ln_N"] = packed_pars["ln_N"]
+    #             continue
 
-            coord_name = k.split("_")[0]
-            par_name = "_".join(k.split("_")[1:])
-            if coord_name not in pars:
-                pars[coord_name] = {}
-            pars[coord_name][par_name] = packed_pars[k]
+    #         coord_name = k.split("_")[0]
+    #         par_name = "_".join(k.split("_")[1:])
+    #         if coord_name not in pars:
+    #             pars[coord_name] = {}
+    #         pars[coord_name][par_name] = packed_pars[k]
 
-        return pars
+    #     return pars
 
     ###################################################################################
     # Optimization
@@ -405,9 +409,7 @@ class ModelBase(abc.ABC):
     #     return cls.unpack_params(opt_pars, **kwargs), info
 
     @classmethod
-    def optimize(
-        cls, data, init_params, seed=42, jaxopt_kwargs=None, use_bounds=True, **kwargs
-    ):
+    def optimize(cls, data, init_params, jaxopt_kwargs=None, use_bounds=True, **kwargs):
         """
         A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
         for numpyro models.
