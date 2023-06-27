@@ -160,7 +160,7 @@ class GridGMMVariable(VariableBase):
 
     def get_dist(self, params, *_, **__):
         return TruncatedGridGMM(
-            mixing_distribution=dist.Categorical(params["ws"]),
+            mixing_distribution=dist.Categorical(probs=params["ws"]),
             locs=self.locs,
             scales=self.scales,
             low=self.coord_bounds[0],

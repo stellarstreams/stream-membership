@@ -14,13 +14,15 @@ from .plot import _plot_projections
 
 class ModelBase(abc.ABC):
     # The name of the model component (e.g., "steam" or "background"):
-    name = None  # required
+    name = None  # override required
 
     # A dictionary of coordinate names and corresponding model terms
-    variables = None  # required
+    variables = None  # override required
+
+    data_required = None  # override optional
 
     # TODO:
-    ln_N_dist = None  # required
+    ln_N_dist = None  # override required
 
     # TODO: optional??
     default_grids = None
@@ -66,6 +68,30 @@ class ModelBase(abc.ABC):
                 "as instances of Component classes."
             )
 
+        # Now we validate the keys of .variables, and detect any joint distributions
+        cls._joint_names = {}
+        for k in cls.variables:
+            if isinstance(k, str):
+                continue
+            elif isinstance(k, tuple):
+                # a shorthand name for the joint keys, joining the two variables
+                cls._joint_names[k] = "_".join(k)
+            else:
+                raise ValueError(f"Invalid key type '{k}' in variables: type={type(k)}")
+
+        # Validate the data_required dictionary to make sure ... TODO
+        if cls.data_required is None:
+            cls.data_required = {}
+
+        cls._data_required = {k: {"y": k} for k in cls.variables}
+        for k, v in cls.data_required.items():
+            if k not in cls.variables:
+                raise ValueError(
+                    f"Invalid data required key '{k}' (it doesn't exist in the "
+                    "variables dictionary)"
+                )
+            cls._data_required[k] = v
+
         # Do this otherwise all subclasses will share the same mutables (i.e. dictionary
         # or strings) and modifying one will modify all:
         for name, thing in inspect.getmembers(cls):
@@ -96,11 +122,11 @@ class ModelBase(abc.ABC):
         pars = {}
 
         # ln_N = ln(total number of stars in this component)
-        pars["ln_N"] = numpyro.sample(f"ln_N_{cls.name}", cls.ln_N_dist)
+        pars["ln_N"] = numpyro.sample(f"{cls.name}-ln_N", cls.ln_N_dist)
 
-        # TODO: need to also support cases when comp_name is a tuple??
         for comp_name, comp in cls.variables.items():
-            pars[comp_name] = comp.setup_numpyro(name_prefix=f"{comp_name}_")
+            name = cls._joint_names.get(comp_name, comp_name)
+            pars[comp_name] = comp.setup_numpyro(name_prefix=f"{cls.name}-{name}-")
 
         obj = cls(pars=pars)
 
@@ -108,9 +134,9 @@ class ModelBase(abc.ABC):
             # Compute the log of the effective volume integral, used in the poisson
             # process likelihood
             ln_n = obj.ln_number_density(data)
-            numpyro.factor(f"V_{cls.name}", -obj.get_N())
-            numpyro.factor(f"ln_n_{cls.name}", ln_n.sum())
-            numpyro.factor(f"extra_prior_{cls.name}", obj.extra_ln_prior())
+            numpyro.factor(f"{cls.name}-V", -obj.get_N())
+            numpyro.factor(f"{cls.name}-ln_n", ln_n.sum())
+            numpyro.factor(f"{cls.name}-extra_prior", obj.extra_ln_prior())
 
         return obj
 
@@ -126,9 +152,9 @@ class ModelBase(abc.ABC):
         """
         comp_ln_probs = {}
         for comp_name, comp in self.variables.items():
-            # TODO: the core issue is how to determine which data values to pass in here
+            data_kw = {k: data[v] for k, v in self._data_required[comp_name].items()}
             comp_ln_probs[comp_name] = comp.ln_prob(
-                params=self._pars[comp_name], y=data[comp_name], x=data["phi1"]
+                params=self._pars[comp_name], **data_kw
             )
         return comp_ln_probs
 
@@ -147,6 +173,7 @@ class ModelBase(abc.ABC):
         ln_probs = self.component_ln_prob_density(data)
 
         # TODO: this bakes in phi1 as a special name
+        # TODO: this whole method needs a rethink! for the case of joints
         ln_prob_phi1 = ln_probs.pop("phi1")
 
         for k in ln_probs.keys():
@@ -167,8 +194,8 @@ class ModelBase(abc.ABC):
     def objective(cls, p, data):
         model = cls(p)
         ll = model.ln_likelihood(data)
-        # TODO: again, phi1 is a special name!
-        return -ll / len(data["phi1"])
+        N = next(iter(data.values())).shape[0]
+        return -ll / N
 
     ###################################################################################
     # Evaluating on grids and plotting
@@ -294,6 +321,16 @@ class ModelBase(abc.ABC):
     ###################################################################################
     # Utilities for manipulating parameters
     #
+    @classmethod
+    def _normalize_variable_keys(cls, input_dict):
+        out = {}
+        for k, v in input_dict.items():
+            if not isinstance(k, str):
+                out["__".join(k)] = v
+            else:
+                out[k] = v
+        return out
+
     @classmethod
     def _strip_model_name(cls, packed_pars):
         """
