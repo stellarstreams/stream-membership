@@ -108,6 +108,9 @@ class ModelBase(abc.ABC):
         if not cls.__name__.endswith("Base") and cls.name is None:
             raise ValueError("you must specify a model component name")
 
+        if cls.default_grids is None:
+            cls.default_grids = {}
+
     ###################################################################################
     # Methods that can be overridden in subclasses:
     #
@@ -169,22 +172,6 @@ class ModelBase(abc.ABC):
         comp_ln_probs = self.component_ln_prob_density(data)
         return jnp.sum(jnp.array([v for v in comp_ln_probs.values()]), axis=0)
 
-    def component_ln_number_density(self, data):
-        """
-        NOTE: This computes the log-number density of the joint distribution n(phi1, X)
-        where X is each component (e.g., phi2, pm1, etc.).
-        """
-        ln_probs = self.component_ln_prob_density(data)
-
-        # TODO: this bakes in phi1 as a special name
-        # TODO: this whole method needs a rethink! for the case of joints
-        ln_prob_phi1 = ln_probs.pop("phi1")
-
-        for k in ln_probs.keys():
-            ln_probs[k] = self._pars["ln_N"] + ln_prob_phi1 + ln_probs[k]
-
-        return ln_probs
-
     def ln_number_density(self, data):
         return self._pars["ln_N"] + self.ln_prob_density(data)
 
@@ -211,15 +198,18 @@ class ModelBase(abc.ABC):
         if grids is None:
             grids = {}
 
-        # TODO: again, phi1 is a special name!
-        for name in ("phi1",) + coord_names:
+        for name in coord_names:
             if name not in grids and name not in self.default_grids:
                 raise ValueError(f"No default grid for {name}, so you must specify it")
             if name not in grids:
                 grids[name] = self.default_grids.get(name)
         return grids
 
-    def evaluate_on_grids(self, grids=None, coord_names=None):
+    def evaluate_on_2d_grids(self, grids=None, x_coord="phi1", coord_names=None):
+        """
+        Evaluate the log-number density on a 2D grid of coordinates. This is useful for
+        creating plots of the predicted model number density.
+        """
         if coord_names is None:
             coord_names = self.coord_names
         grids = self._get_grids_dict(grids, coord_names)
@@ -227,21 +217,33 @@ class ModelBase(abc.ABC):
         all_grids = {}
         terms = {}
         for name in coord_names:
-            grid1, grid2 = np.meshgrid(grids["phi1"], grids[name])
+            if name == x_coord:
+                continue
+
+            grid1, grid2 = np.meshgrid(grids[x_coord], grids[name])
+
+            bin_area = np.abs(
+                (grids[x_coord][1] - grids[x_coord][0])
+                * (grids[name][1] - grids[name][0])
+            )
 
             # Fill a data dict with zeros for all coordinates not being plotted
             # TODO: this is a hack and we take a performance hit for this because we
             # unnecessarily compute log-probs at nonsense values
-            tmp_data = {"phi1": grid1.ravel()}
+            tmp_data = {x_coord: grid1.ravel()}
             for tmp_name in coord_names:
                 if tmp_name == name:
                     tmp_data[tmp_name] = grid2.ravel()
+                elif tmp_name == x_coord:
+                    tmp_data[tmp_name] = grid1.ravel()
                 else:
                     tmp_data[tmp_name] = jnp.zeros_like(grid1.ravel())
-                # TODO: hard-coded assumption that data errors are named _err
-                tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
 
-            ln_n = self.component_ln_number_density(tmp_data, return_terms=True)[name]
+                # TODO: hard-coded assumption that data errors are named _err
+                # tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
+
+            ln_ps = self.component_ln_prob_density(tmp_data)
+            ln_n = self._pars["ln_N"] + ln_ps[x_coord] + ln_ps[name] + np.log(bin_area)
             terms[name] = ln_n.reshape(grid1.shape)
             all_grids[name] = (grid1, grid2)
 
@@ -258,7 +260,7 @@ class ModelBase(abc.ABC):
         if coord_names is None:
             coord_names = self.coord_names
 
-        grids, ln_ns = self.evaluate_on_grids(grids=grids, coord_names=coord_names)
+        grids, ln_ns = self.evaluate_on_2d_grids(grids=grids, coord_names=coord_names)
         ims = {name: np.exp(ln_ns[name]) for name in self.coord_names}
         return _plot_projections(
             grids=grids,
@@ -287,7 +289,7 @@ class ModelBase(abc.ABC):
 
         # Evaluate the model at the grid midpoints
         model_grids = {k: 0.5 * (g[:-1] + g[1:]) for k, g in grids.items()}
-        im_grids, ln_ns = self.evaluate_on_grids(grids=model_grids)
+        im_grids, ln_ns = self.evaluate_on_2d_grids(grids=model_grids)
         model_ims = {name: np.exp(ln_ns[name]) for name in self.coord_names}
 
         resid_ims = {}
