@@ -117,9 +117,16 @@ class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
                 norm = dist.Normal(locs[k, d], scales[k, d])
                 sign = jnp.where(locs[k, d] >= low[d], 1.0, -1.0)
 
-                _tail_prob_at_low = norm.cdf(locs[k, d] - sign * (locs[k, d] - low[d]))
-                _tail_prob_at_high = norm.cdf(
-                    locs[k, d] - sign * (locs[k, d] - high[d])
+                _tail_prob_at_low = jnp.where(
+                    jnp.isfinite(low[d]),
+                    norm.cdf(locs[k, d] - sign * (locs[k, d] - low[d])),
+                    0.0,
+                )
+
+                _tail_prob_at_high = jnp.where(
+                    jnp.isfinite(high[d]),
+                    norm.cdf(locs[k, d] - sign * (locs[k, d] - high[d])),
+                    1.0,
                 )
 
                 self._log_diff_tail_probs = self._log_diff_tail_probs.at[k].add(
