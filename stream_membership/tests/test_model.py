@@ -7,7 +7,7 @@ import numpyro.distributions as dist
 from numpyro import infer
 
 from .. import ModelBase
-from ..components import Normal1DComponent
+from ..variables import Normal1DVariable
 
 
 def test_subclass():
@@ -18,15 +18,15 @@ def test_subclass():
 
         ln_N_dist = dist.Uniform(-10, 15)
 
-        components = {
-            "phi1": Normal1DComponent(
+        variables = {
+            "phi1": Normal1DVariable(
                 param_priors={
                     "mean": dist.Uniform(0, 10),
                     "ln_std": dist.Uniform(-5, 5),
                 },
                 coord_bounds=(0, 5),
             ),
-            "phi2": Normal1DComponent(
+            "phi2": Normal1DVariable(
                 param_priors={
                     "mean": dist.Uniform(-5, 5),
                     "ln_std": dist.Uniform(-5, 5),
