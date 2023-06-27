@@ -5,10 +5,10 @@ from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
 from .truncatedgridgmm import TruncatedGridGMM
 
-__all__ = ["Normal1DComponent", "Normal1DSplineComponent", "GridGMMComponent"]
+__all__ = ["Normal1DVariable", "Normal1DSplineVariable", "GridGMMVariable"]
 
 
-class ComponentBase:
+class VariableBase:
     param_names = None
 
     def __init_subclass__(cls) -> None:
@@ -16,13 +16,13 @@ class ComponentBase:
         for f in required_methods:
             if getattr(cls, f) is getattr(__class__, f):
                 raise ValueError(
-                    "Subclasses of ComponentBase must implement methods for: "
+                    "Subclasses of VariableBase must implement methods for: "
                     f"{required_methods}"
                 )
 
         if cls.param_names is None:
             raise ValueError(
-                "Subclasses of ComponentBase must specify an iterable of string "
+                "Subclasses of VariableBase must specify an iterable of string "
                 "parameter names as the `param_names` attribute."
             )
         cls.param_names = tuple(cls.param_names)
@@ -80,7 +80,7 @@ class ComponentBase:
         return d.log_prob(y)
 
 
-class Normal1DComponent(ComponentBase):
+class Normal1DVariable(VariableBase):
     param_names = ("mean", "ln_std")
 
     def get_dist(self, params, *_, **__):
@@ -92,7 +92,7 @@ class Normal1DComponent(ComponentBase):
         )
 
 
-class Normal1DSplineComponent(ComponentBase):
+class Normal1DSplineVariable(VariableBase):
     param_names = ("mean", "ln_std")
 
     def __init__(self, param_priors, knots, spline_k=3, coord_bounds=None):
@@ -135,7 +135,7 @@ class Normal1DSplineComponent(ComponentBase):
         )
 
 
-class GridGMMComponent(ComponentBase):
+class GridGMMVariable(VariableBase):
     param_names = ("ws",)
 
     def __init__(self, param_priors, locs, scales, coord_bounds=None):
