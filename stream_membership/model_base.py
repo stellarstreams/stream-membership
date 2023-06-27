@@ -365,6 +365,45 @@ class ModelBase(abc.ABC):
     ###################################################################################
     # Optimization
     #
+    # @classmethod
+    # def optimize_numpyro(
+    #     cls, data, init_params, seed=42, jaxopt_kwargs=None, use_bounds=True, **kwargs
+    # ):
+    #     """
+    #     A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
+    #     for numpyro models.
+    #     """
+    #     from numpyro_ext.optim import optimize
+
+    #     from .optim import CustomJAXOptBoundedMinimize, CustomJAXOptMinimize
+
+    #     if jaxopt_kwargs is None:
+    #         jaxopt_kwargs = {}
+    #     jaxopt_kwargs.setdefault("maxiter", 2048)
+
+    #     if use_bounds:
+    #         jaxopt_kwargs.setdefault("method", "L-BFGS-B")
+    #         bounds = cls._get_jaxopt_bounds()
+    #         strategy = CustomJAXOptBoundedMinimize(
+    #             loss_scale_factor=1 / len(data["phi1"]), bounds=bounds, **jaxopt_kwargs
+    #         )
+    #     else:
+    #         jaxopt_kwargs.setdefault("method", "BFGS")
+    #         strategy = CustomJAXOptMinimize(
+    #             loss_scale_factor=1 / len(data["phi1"]), **jaxopt_kwargs
+    #         )
+
+    #     optimizer = optimize(
+    #         cls.setup_numpyro,
+    #         start=init_params,
+    #         return_info=True,
+    #         optimizer=strategy,
+    #     )
+    #     opt_pars, info = optimizer(jax.random.PRNGKey(seed), data=data, **kwargs)
+    #     opt_pars = {k: v for k, v in opt_pars.items() if not k.startswith("obs_")}
+
+    #     return cls.unpack_params(opt_pars, **kwargs), info
+
     @classmethod
     def optimize(
         cls, data, init_params, seed=42, jaxopt_kwargs=None, use_bounds=True, **kwargs
@@ -373,36 +412,24 @@ class ModelBase(abc.ABC):
         A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
         for numpyro models.
         """
-        from numpyro_ext.optim import optimize
-
-        from .optim import CustomJAXOptBoundedMinimize, CustomJAXOptMinimize
+        import jaxopt
 
         if jaxopt_kwargs is None:
             jaxopt_kwargs = {}
-        jaxopt_kwargs.setdefault("maxiter", 2048)
+        jaxopt_kwargs.setdefault("maxiter", 1024)  # TODO: TOTALLY ARBITRARY
 
+        optimize_kwargs = {}
         if use_bounds:
             jaxopt_kwargs.setdefault("method", "L-BFGS-B")
-            bounds = cls._get_jaxopt_bounds()
-            strategy = CustomJAXOptBoundedMinimize(
-                loss_scale_factor=1 / len(data["phi1"]), bounds=bounds, **jaxopt_kwargs
-            )
+            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds()
+            Optimizer = jaxopt.ScipyBoundedMinimize
         else:
             jaxopt_kwargs.setdefault("method", "BFGS")
-            strategy = CustomJAXOptMinimize(
-                loss_scale_factor=1 / len(data["phi1"]), **jaxopt_kwargs
-            )
+            Optimizer = jaxopt.ScipyMinimize
 
-        optimizer = optimize(
-            cls.setup_numpyro,
-            start=init_params,
-            return_info=True,
-            optimizer=strategy,
-        )
-        opt_pars, info = optimizer(jax.random.PRNGKey(seed), data=data, **kwargs)
-        opt_pars = {k: v for k, v in opt_pars.items() if not k.startswith("obs_")}
-
-        return cls.unpack_params(opt_pars, **kwargs), info
+        optimizer = Optimizer(**jaxopt_kwargs, fun=cls.objective)
+        opt_res = optimizer.run(init_params=init_params, data=data, **optimize_kwargs)
+        return opt_res.params, opt_res.state
 
     @classmethod
     def _get_jaxopt_bounds(cls):
