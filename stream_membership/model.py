@@ -53,10 +53,6 @@ class ModelBase(abc.ABC):
         # store the inputted parameters
         self._pars = pars
 
-    @property
-    def coord_names(self):
-        return tuple(self.variables.keys())
-
     def __init_subclass__(cls):
         if cls.name is None:
             raise ValueError(
@@ -72,15 +68,23 @@ class ModelBase(abc.ABC):
             )
 
         # Now we validate the keys of .variables, and detect any joint distributions
+        cls.coord_names = []
         cls._joint_names = {}
         for k in cls.variables:
             if isinstance(k, str):
+                cls.coord_names.append(k)
                 continue
             elif isinstance(k, tuple):
                 # a shorthand name for the joint keys, joining the two variables
-                cls._joint_names[k] = "_".join(k)
+                cls._joint_names[k] = "__".join(k)
+
+                for kk in k:
+                    cls.coord_names.append(kk)
+
             else:
                 raise ValueError(f"Invalid key type '{k}' in variables: type={type(k)}")
+        cls._joint_names_inv = {v: k for k, v in cls._joint_names.items()}
+        cls.coord_names = tuple(cls.coord_names)
 
         # Validate the data_required dictionary to make sure it's valid TODO
         if cls.data_required is None:
@@ -189,7 +193,12 @@ class ModelBase(abc.ABC):
         return -self.get_N() + self.ln_number_density(data).sum()
 
     @classmethod
-    def objective(cls, p, data):
+    def _objective(cls, p, data):
+        """
+        TODO: keys of inputs have to be normalized to remove tuples
+        """
+        p = cls._expand_variable_keys(p)
+        data = cls._expand_variable_keys(data)
         model = cls(p)
         ll = model.ln_likelihood(data)
         N = next(iter(data.values())).shape[0]
@@ -338,8 +347,18 @@ class ModelBase(abc.ABC):
     def _normalize_variable_keys(cls, input_dict):
         out = {}
         for k, v in input_dict.items():
-            if not isinstance(k, str):
-                out["__".join(k)] = v
+            if k in cls._joint_names:
+                out[cls._joint_names[k]] = v
+            else:
+                out[k] = v
+        return out
+
+    @classmethod
+    def _expand_variable_keys(cls, input_dict):
+        out = {}
+        for k, v in input_dict.items():
+            if k in cls._joint_names_inv:
+                out[cls._joint_names_inv[k]] = v
             else:
                 out[k] = v
         return out
@@ -433,14 +452,22 @@ class ModelBase(abc.ABC):
         if use_bounds:
             jaxopt_kwargs.setdefault("method", "L-BFGS-B")
             optimize_kwargs["bounds"] = cls._get_jaxopt_bounds()
+            optimize_kwargs["bounds"] = (
+                cls._normalize_variable_keys(optimize_kwargs["bounds"][0]),
+                cls._normalize_variable_keys(optimize_kwargs["bounds"][1]),
+            )
             Optimizer = jaxopt.ScipyBoundedMinimize
         else:
             jaxopt_kwargs.setdefault("method", "BFGS")
             Optimizer = jaxopt.ScipyMinimize
 
-        optimizer = Optimizer(**jaxopt_kwargs, fun=cls.objective)
-        opt_res = optimizer.run(init_params=init_params, data=data, **optimize_kwargs)
-        return opt_res.params, opt_res.state
+        optimizer = Optimizer(**jaxopt_kwargs, fun=cls._objective)
+        opt_res = optimizer.run(
+            init_params=cls._normalize_variable_keys(init_params),
+            data=cls._normalize_variable_keys(data),
+            **optimize_kwargs,
+        )
+        return cls._expand_variable_keys(opt_res.params), opt_res.state
 
     @classmethod
     def _get_jaxopt_bounds(cls):
