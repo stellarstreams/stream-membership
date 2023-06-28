@@ -114,8 +114,8 @@ class ModelBase:
         axes=None,
         label=True,
         pcolormesh_kwargs=None,
-        x_coord="phi1",
         coord_names=None,
+        x_coord="phi1",
     ):
         if coord_names is None:
             coord_names = self.coord_names
@@ -143,6 +143,7 @@ class ModelBase:
         smooth=1.0,
         pcolormesh_kwargs=None,
         coord_names=None,
+        x_coord="phi1",
     ):
         from scipy.ndimage import gaussian_filter
 
@@ -153,20 +154,26 @@ class ModelBase:
 
         # Evaluate the model at the grid midpoints
         model_grids = {k: 0.5 * (g[:-1] + g[1:]) for k, g in grids.items()}
-        im_grids, ln_ns = self.evaluate_on_2d_grids(grids=model_grids)
-        model_ims = {name: np.exp(ln_ns[name]) for name in self.coord_names}
+        im_grids, ln_ns = self.evaluate_on_2d_grids(grids=model_grids, x_coord=x_coord)
+        model_ims = {
+            name: np.exp(ln_ns[name]) for name in self.coord_names if name != x_coord
+        }
 
         resid_ims = {}
         for name in self.coord_names:
+            if name == x_coord:
+                continue
+
             # get the number density: density=True is the prob density, so need to
             # multiply back in the total number of data points
+            # TODO: slightly wrong because histogram2d takes edges, but want to evaluate
+            # on grid centers
             H_data, *_ = np.histogram2d(
                 data["phi1"],
                 data[name],
                 bins=(grids["phi1"], grids[name]),
-                density=True,
             )
-            data_im = H_data.T * len(data["phi1"])
+            data_im = H_data.T
 
             resid_ims[name] = model_ims[name] - data_im
 
@@ -220,12 +227,13 @@ class StreamModel(ModelBase, abc.ABC):
             name.
         """
 
+        # TODO: do this in a way that handles tuples
         # Validate input params:
-        for name in self.coord_names + ("ln_N",):
-            if name not in params:
-                raise ValueError(
-                    f"Expected coordinate name '{name}' in input parameters"
-                )
+        # for name in self.coord_names + ("ln_N",):
+        #     if name not in params:
+        #         raise ValueError(
+        #             f"Expected coordinate name '{name}' in input parameters"
+        #         )
 
         # store the inputted parameters
         self._pars = params
