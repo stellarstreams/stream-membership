@@ -82,11 +82,12 @@ class ModelBase(abc.ABC):
             else:
                 raise ValueError(f"Invalid key type '{k}' in variables: type={type(k)}")
 
-        # Validate the data_required dictionary to make sure ... TODO
+        # Validate the data_required dictionary to make sure it's valid TODO
         if cls.data_required is None:
             cls.data_required = {}
 
-        cls._data_required = {k: {"y": k} for k in cls.variables}
+        # TODO: need to document assumption that data errors are passed in as _err keys
+        cls._data_required = {k: {"y": k, "y_err": f"{k}_err"} for k in cls.variables}
         for k, v in cls.data_required.items():
             if k not in cls.variables:
                 raise ValueError(
@@ -159,7 +160,10 @@ class ModelBase(abc.ABC):
         """
         comp_ln_probs = {}
         for comp_name, comp in self.variables.items():
-            data_kw = {k: data[v] for k, v in self._data_required[comp_name].items()}
+            # NOTE: the default 0. is to handle missing errors
+            data_kw = {
+                k: data.get(v, 0.0) for k, v in self._data_required[comp_name].items()
+            }
             comp_ln_probs[comp_name] = comp.ln_prob(
                 params=self._pars[comp_name], **data_kw
             )

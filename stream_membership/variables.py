@@ -1,3 +1,6 @@
+from functools import partial
+
+import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
@@ -75,18 +78,19 @@ class VariableBase:
     def get_dist(self, params):
         raise NotImplementedError()
 
-    def ln_prob(self, params, y, *args, **kwargs):
-        d = self.get_dist(params, *args, **kwargs)
+    @partial(jax.jit, static_argnums=(0,))
+    def ln_prob(self, params, y, y_err, *args, **kwargs):
+        d = self.get_dist(params, y_err, *args, **kwargs)
         return d.log_prob(y)
 
 
 class Normal1DVariable(VariableBase):
     param_names = ("mean", "ln_std")
 
-    def get_dist(self, params, *_, **__):
+    def get_dist(self, params, y_err, *_, **__):
         return dist.TruncatedNormal(
             loc=params["mean"],
-            scale=jnp.exp(params["ln_std"]),
+            scale=jnp.sqrt(jnp.exp(2 * params["ln_std"]) + y_err**2),
             low=self.coord_bounds[0],
             high=self.coord_bounds[1],
         )
@@ -116,9 +120,7 @@ class Normal1DSplineVariable(VariableBase):
 
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
-    def get_dist(self, params, x, *_, **__):
-        # TODO: can we check if shape of params is len(knots) or single value, and only
-        # do spline if it's the former?
+    def get_dist(self, params, y_err, x, *_, **__):
         # TODO: I think this has to go here, and not in init
         self.splines = {}
         for name in self.param_names:
@@ -131,7 +133,7 @@ class Normal1DSplineVariable(VariableBase):
 
         return dist.TruncatedNormal(
             loc=self.splines["mean"](x),
-            scale=jnp.exp(self.splines["ln_std"](x)),
+            scale=jnp.sqrt(jnp.exp(2 * self.splines["ln_std"](x)) + y_err**2),
             low=self.coord_bounds[0],
             high=self.coord_bounds[1],
         )
@@ -160,11 +162,11 @@ class GridGMMVariable(VariableBase):
 
         self._stick = dist.transforms.StickBreakingTransform()
 
-    def get_dist(self, params, *_, **__):
+    def get_dist(self, params, y_err, **__):
         return TruncatedGridGMM(
             mixing_distribution=dist.Categorical(probs=self._stick(params["zs"])),
             locs=self.locs,
-            scales=self.scales,
+            scales=jnp.sqrt(self.scales[None] ** 2 + y_err[:, None] ** 2),
             low=self.coord_bounds[0],
             high=self.coord_bounds[1],
         )
