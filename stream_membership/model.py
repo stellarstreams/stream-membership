@@ -114,13 +114,18 @@ class ModelBase:
         axes=None,
         label=True,
         pcolormesh_kwargs=None,
+        x_coord="phi1",
         coord_names=None,
     ):
         if coord_names is None:
             coord_names = self.coord_names
 
-        grids, ln_ns = self.evaluate_on_2d_grids(grids=grids, coord_names=coord_names)
-        ims = {name: np.exp(ln_ns[name]) for name in self.coord_names}
+        grids, ln_ns = self.evaluate_on_2d_grids(
+            grids=grids, coord_names=coord_names, x_coord=x_coord
+        )
+        ims = {
+            name: np.exp(ln_ns[name]) for name in self.coord_names if name != x_coord
+        }
         return _plot_projections(
             grids=grids,
             ims=ims,
