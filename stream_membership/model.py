@@ -1,6 +1,7 @@
 import abc
 import copy
 import inspect
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -13,47 +14,6 @@ from .plot import _plot_projections
 
 
 class ModelBase:
-    @classmethod
-    def _objective(cls, p, data, *args, **kwargs):
-        """
-        TODO: keys of inputs have to be normalized to remove tuples
-        """
-        p = cls._expand_variable_keys(p)
-        data = cls._expand_variable_keys(data)
-        model = cls(params=p, *args, **kwargs)
-        ll = model.ln_likelihood(data)
-        N = next(iter(data.values())).shape[0]
-        return -ll / N
-
-    ###################################################################################
-    # Utilities for manipulating parameters
-    #
-    @classmethod
-    def _normalize_variable_keys(cls, input_dict):
-        out = {}
-        for k, v in input_dict.items():
-            if isinstance(v, dict):
-                v = cls._normalize_variable_keys(v)
-
-            if k in cls._joint_names:
-                out[cls._joint_names[k]] = v
-            else:
-                out[k] = v
-        return out
-
-    @classmethod
-    def _expand_variable_keys(cls, input_dict):
-        out = {}
-        for k, v in input_dict.items():
-            if isinstance(v, dict):
-                v = cls._expand_variable_keys(v)
-
-            if k in cls._joint_names_inv:
-                out[cls._joint_names_inv[k]] = v
-            else:
-                out[k] = v
-        return out
-
     @classmethod
     def optimize(cls, data, init_params, jaxopt_kwargs=None, use_bounds=True, **kwargs):
         """
@@ -79,7 +39,6 @@ class ModelBase:
             jaxopt_kwargs.setdefault("method", "BFGS")
             Optimizer = jaxopt.ScipyMinimize
 
-        # TODO: normalize and expand should work recursively...
         optimizer = Optimizer(**jaxopt_kwargs, fun=cls._objective)
         opt_res = optimizer.run(
             init_params=cls._normalize_variable_keys(init_params),
@@ -405,6 +364,47 @@ class StreamModel(ModelBase, abc.ABC):
         """
         return -self.get_N() + self.ln_number_density(data).sum()
 
+    @classmethod
+    def _objective(cls, p, data, *args, **kwargs):
+        """
+        TODO: keys of inputs have to be normalized to remove tuples
+        """
+        p = cls._expand_variable_keys(p)
+        data = cls._expand_variable_keys(data)
+        model = cls(params=p, *args, **kwargs)
+        ll = model.ln_likelihood(data)
+        N = next(iter(data.values())).shape[0]
+        return -ll / N
+
+    ###################################################################################
+    # Utilities for manipulating parameter names
+    #
+    @classmethod
+    def _normalize_variable_keys(cls, input_dict):
+        out = {}
+        for k, v in input_dict.items():
+            if isinstance(v, dict):
+                v = cls._normalize_variable_keys(v)
+
+            if k in cls._joint_names:
+                out[cls._joint_names[k]] = v
+            else:
+                out[k] = v
+        return out
+
+    @classmethod
+    def _expand_variable_keys(cls, input_dict):
+        out = {}
+        for k, v in input_dict.items():
+            if isinstance(v, dict):
+                v = cls._expand_variable_keys(v)
+
+            if k in cls._joint_names_inv:
+                out[cls._joint_names_inv[k]] = v
+            else:
+                out[k] = v
+        return out
+
     ###################################################################################
     # Optimization
     #
@@ -507,7 +507,7 @@ class StreamModel(ModelBase, abc.ABC):
     #     return cls.unpack_params(opt_pars, **kwargs), info
 
 
-class MixtureModel:
+class StreamMixtureModel(ModelBase):
     def __init__(self, params, Components):
         self.components = [C(params[C.name]) for C in Components]
         if len(self.components) < 1:
@@ -567,13 +567,14 @@ class MixtureModel:
         """
         NOTE: This is the Poisson process likelihood
         """
+        # TODO: logsumexp instead?
         N = jnp.sum(jnp.array([c.get_N() for c in self.components]))
         return -N + self.ln_number_density(data).sum()
 
     def evaluate_on_2d_grids(self, grids=None, x_coord="phi1", coord_names=None):
         terms = {}
         for component in self.components:
-            grids, component_terms = component.evaluate_on_2d_grids(
+            all_grids, component_terms = component.evaluate_on_2d_grids(
                 grids, x_coord, coord_names
             )
             for k, v in component_terms.items():
@@ -581,8 +582,8 @@ class MixtureModel:
                     terms[k] = []
                 terms[k].append(v)
 
-        terms = {k: np.sum(v, axis=0) for k, v in terms.items()}
-        return grids, terms
+        terms = {k: logsumexp(jnp.array(v), axis=0) for k, v in terms.items()}
+        return all_grids, terms
 
     @classmethod
     def _get_jaxopt_bounds(cls, Components):
@@ -590,7 +591,73 @@ class MixtureModel:
         bounds_h = {}
         for C in Components:
             _bounds = C._get_jaxopt_bounds()
-            bounds_l[C.name] = _bounds[0]
-            bounds_h[C.name] = _bounds[1]
+            bounds_l[C.name] = C._normalize_variable_keys(_bounds[0])
+            bounds_h[C.name] = C._normalize_variable_keys(_bounds[1])
         bounds = (bounds_l, bounds_h)
         return bounds
+
+    @classmethod
+    @partial(jax.jit, static_argnums=(0, 3))
+    def _objective(cls, p, data, Components):
+        """
+        TODO: keys of inputs have to be normalized to remove tuples
+
+        TODO: just realized a problem with this: if one component has a joint for phi1,
+        phi2 and others don't, this won't work
+        """
+        p = {C.name: C._expand_variable_keys(p[C.name]) for C in Components}
+
+        # TODO see note about above one component having a joint for phi1, phi2
+        data = Components[0]._expand_variable_keys(data)
+        model = cls(params=p, Components=Components)
+        ll = model.ln_likelihood(data)
+        N = next(iter(data.values())).shape[0]
+        return -ll / N
+
+    @classmethod
+    def optimize(
+        cls,
+        data,
+        init_params,
+        Components,
+        jaxopt_kwargs=None,
+        use_bounds=True,
+        **kwargs,
+    ):
+        """
+        A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
+        for numpyro models.
+        """
+        import jaxopt
+
+        if jaxopt_kwargs is None:
+            jaxopt_kwargs = {}
+        jaxopt_kwargs.setdefault("maxiter", 1024)  # TODO: TOTALLY ARBITRARY
+
+        optimize_kwargs = {}
+        if use_bounds:
+            jaxopt_kwargs.setdefault("method", "L-BFGS-B")
+            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds(Components)
+            Optimizer = jaxopt.ScipyBoundedMinimize
+        else:
+            jaxopt_kwargs.setdefault("method", "BFGS")
+            Optimizer = jaxopt.ScipyMinimize
+
+        optimizer = Optimizer(
+            **jaxopt_kwargs,
+            fun=partial(cls._objective, Components=Components),
+        )
+        opt_res = optimizer.run(
+            init_params={
+                C.name: C._normalize_variable_keys(init_params[C.name])
+                for C in Components
+            },
+            data=Components[0]._normalize_variable_keys(
+                data
+            ),  # TODO: see issue about joint phi1, phi2
+            **optimize_kwargs,
+        )
+        opt_p = {
+            C.name: C._expand_variable_keys(opt_res.params[C.name]) for C in Components
+        }
+        return opt_p, opt_res.state
