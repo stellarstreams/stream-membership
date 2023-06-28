@@ -8,7 +8,12 @@ from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
 from .truncatedgridgmm import TruncatedGridGMM
 
-__all__ = ["Normal1DVariable", "Normal1DSplineVariable", "GridGMMVariable"]
+__all__ = [
+    "Normal1DVariable",
+    "Normal1DSplineVariable",
+    "GridGMMVariable",
+    "UniformVariable",
+]
 
 
 class VariableBase:
@@ -81,7 +86,14 @@ class VariableBase:
     @partial(jax.jit, static_argnums=(0,))
     def ln_prob(self, params, y, *args, **kwargs):
         d = self.get_dist(params, *args, **kwargs)
-        return d.log_prob(y)
+        return d.log_prob(y.reshape((-1,) + d.event_shape))
+
+
+class UniformVariable(VariableBase):
+    param_names = ()
+
+    def get_dist(self, params, y_err=0.0):
+        return dist.Uniform(*self.coord_bounds)
 
 
 class Normal1DVariable(VariableBase):
