@@ -153,7 +153,7 @@ class ModelBase(abc.ABC):
             return None
         return jnp.exp(self._pars["ln_N"])
 
-    def component_ln_prob_density(self, data):
+    def variable_ln_prob_density(self, data):
         """
         The log-probability for each component (e.g., phi2, pm1, etc) evaluated at the
         input data values.
@@ -173,7 +173,7 @@ class ModelBase(abc.ABC):
         """
         The total log-probability evaluated at the input data values.
         """
-        comp_ln_probs = self.component_ln_prob_density(data)
+        comp_ln_probs = self.variable_ln_prob_density(data)
         return jnp.sum(jnp.array([v for v in comp_ln_probs.values()]), axis=0)
 
     def ln_number_density(self, data):
@@ -246,7 +246,7 @@ class ModelBase(abc.ABC):
                 # TODO: hard-coded assumption that data errors are named _err
                 # tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
 
-            ln_ps = self.component_ln_prob_density(tmp_data)
+            ln_ps = self.variable_ln_prob_density(tmp_data)
             ln_n = self._pars["ln_N"] + ln_ps[x_coord] + ln_ps[name] + np.log(bin_area)
             terms[name] = ln_n.reshape(grid1.shape)
             all_grids[name] = (grid1, grid2)
