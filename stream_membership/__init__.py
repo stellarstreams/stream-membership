@@ -1,4 +1,4 @@
-from .model import ModelBase  # noqa
+from .model import MixtureModel, StreamModel  # noqa
 from .variables import *  # noqa
 
 VERSION = "v0.1"
