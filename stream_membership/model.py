@@ -160,9 +160,12 @@ class ModelBase(abc.ABC):
         """
         comp_ln_probs = {}
         for comp_name, comp in self.variables.items():
-            # NOTE: the default 0. is to handle missing errors
+            # NOTE: this silently ignores any data that is not present, even if expected
+            # in the _data_required dict
             data_kw = {
-                k: data.get(v, 0.0) for k, v in self._data_required[comp_name].items()
+                k: data[v]
+                for k, v in self._data_required[comp_name].items()
+                if v in data
             }
             comp_ln_probs[comp_name] = comp.ln_prob(
                 params=self._pars[comp_name], **data_kw

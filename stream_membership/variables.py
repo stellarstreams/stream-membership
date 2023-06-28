@@ -75,19 +75,19 @@ class VariableBase:
 
         return pars
 
-    def get_dist(self, params):
+    def get_dist(self, params, y_err=0.0):
         raise NotImplementedError()
 
     @partial(jax.jit, static_argnums=(0,))
-    def ln_prob(self, params, y, y_err, *args, **kwargs):
-        d = self.get_dist(params, y_err, *args, **kwargs)
+    def ln_prob(self, params, y, *args, **kwargs):
+        d = self.get_dist(params, *args, **kwargs)
         return d.log_prob(y)
 
 
 class Normal1DVariable(VariableBase):
     param_names = ("mean", "ln_std")
 
-    def get_dist(self, params, y_err, *_, **__):
+    def get_dist(self, params, y_err=0.0):
         return dist.TruncatedNormal(
             loc=params["mean"],
             scale=jnp.sqrt(jnp.exp(2 * params["ln_std"]) + y_err**2),
@@ -120,7 +120,7 @@ class Normal1DSplineVariable(VariableBase):
 
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
-    def get_dist(self, params, y_err, x, *_, **__):
+    def get_dist(self, params, x, y_err=0.0):
         # TODO: I think this has to go here, and not in init
         self.splines = {}
         for name in self.param_names:
@@ -162,11 +162,15 @@ class GridGMMVariable(VariableBase):
 
         self._stick = dist.transforms.StickBreakingTransform()
 
-    def get_dist(self, params, y_err, **__):
+    def get_dist(self, params, y_err=None):
+        if y_err is None:
+            scales = self.scales
+        else:
+            scales = jnp.sqrt(self.scales[None] ** 2 + y_err[:, None] ** 2)
         return TruncatedGridGMM(
             mixing_distribution=dist.Categorical(probs=self._stick(params["zs"])),
             locs=self.locs,
-            scales=jnp.sqrt(self.scales[None] ** 2 + y_err[:, None] ** 2),
+            scales=scales,
             low=self.coord_bounds[0],
             high=self.coord_bounds[1],
         )

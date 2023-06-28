@@ -89,10 +89,12 @@ class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
         event_shape = combined_shape[-1:]
         K = batch_shape[-1]
         D = event_shape[0]
+        self._K = K
+        self._D = D
 
         # TODO: If we want to be strict: error if event_shape has len > 1
 
-        # TODO: check that mixing_distribution has the right shape
+        # TODO: check that mixing_distribution has the right shape?
 
         self.locs, self.scales = promote_shapes(
             jnp.array(locs),
@@ -110,7 +112,7 @@ class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
         high = jnp.broadcast_to(self.high, event_shape)
 
         # covs = jnp.zeros(batch_shape + event_shape + event_shape)
-        covs = jnp.zeros(self.scales.shape[:-1] + event_shape + event_shape)
+        covs = jnp.zeros(scales.shape[:-1] + event_shape + event_shape)
         idx = jnp.arange(D)
         covs = covs.at[..., idx, idx].set(scales**2)
         component_distribution = dist.MultivariateNormal(
