@@ -1,31 +1,38 @@
 import numpy as np
 
 
-def _plot_projections(
-    grids, ims, axes=None, label=True, pcolormesh_kwargs=None, coord_names=None
-):
-    if coord_names is None:
-        coord_names = [k for k in grids.keys() if k != "phi1"]
-
+def _plot_projections(grids, ims, axes=None, label=True, pcolormesh_kwargs=None):
     import matplotlib as mpl
 
+    grid_coord_names = list(grids.keys())
+    if len(grid_coord_names) < 1:
+        raise ValueError("You must pass in some grids")
+    # TODO: Check that grids.keys() and ims.keys() are the same
+
     _default_labels = {
+        "phi1": r"$\phi_1$",
         "phi2": r"$\phi_2$",
         "pm1": r"$\mu_{\phi_1}$",
         "pm2": r"$\mu_{\phi_2}$",
+        "rv": r"$v_r$",
     }
 
     if pcolormesh_kwargs is None:
         pcolormesh_kwargs = {}
 
+    # Check that all x coord names are the same
+    sharex = all(
+        [name_pair[0] == grid_coord_names[0][0] for name_pair in grid_coord_names]
+    )
+
     if axes is None:
         import matplotlib.pyplot as plt
 
         _, axes = plt.subplots(
-            len(coord_names),
+            len(grid_coord_names),
             1,
-            figsize=(10, 2 + 2 * len(coord_names)),
-            sharex=True,
+            figsize=(10, 2 + 2 * len(grid_coord_names)),
+            sharex=sharex,
             sharey="row",
             constrained_layout=True,
         )
@@ -34,14 +41,19 @@ def _plot_projections(
         axes = [axes]
     axes = np.array(axes)
 
-    for i, name in enumerate(coord_names):
-        grid1, grid2 = grids[name]
-        axes[i].pcolormesh(grid1, grid2, ims[name], shading="auto", **pcolormesh_kwargs)
+    for i, name_pair in enumerate(grid_coord_names):
+        grid1, grid2 = grids[name_pair]
+        axes[i].pcolormesh(grid1, grid2, ims[name_pair], **pcolormesh_kwargs)
         axes[i].set_ylim(grid2.min(), grid2.max())
 
         if label:
-            axes[i].set_ylabel(_default_labels[name])
+            axes[i].set_ylabel(_default_labels[name_pair[1]])
 
+        if not sharex:
+            axes[i].set_xlabel(_default_labels[name_pair[0]])
+
+    if sharex:
+        axes[-1].set_xlabel(_default_labels[name_pair[0]])
     axes[0].set_xlim(grid1.min(), grid1.max())
 
     return axes.flat[0].figure, axes
@@ -50,29 +62,34 @@ def _plot_projections(
 def plot_data_projections(
     data,
     grids,
+    coord_names=None,
     axes=None,
     label=True,
     smooth=1.0,
     pcolormesh_kwargs=None,
-    coord_names=None,
 ):
+    """
+    TODO:
+    - coord_names should be a list of tuples like [('phi1', 'phi2')]
+    """
     from scipy.ndimage import gaussian_filter
 
-    if coord_names is None and grids is None:
-        raise ValueError()
-    elif coord_names is None:
-        coord_names = [k for k in grids.keys() if k != "phi1"]
+    if coord_names is None:
+        tmp = list(grids.keys())
+        coord_names = [(tmp[0], name) for name in tmp[1:]]
 
     ims = {}
     im_grids = {}
-    for name in coord_names:
+    for name_pair in coord_names:
         H_data, xe, ye = np.histogram2d(
-            data["phi1"], data[name], bins=(grids["phi1"], grids[name])
+            data[name_pair[0]],
+            data[name_pair[1]],
+            bins=(grids[name_pair[0]], grids[name_pair[1]]),
         )
         if smooth is not None:
             H_data = gaussian_filter(H_data, smooth)
-        im_grids[name] = (xe, ye)
-        ims[name] = H_data.T
+        im_grids[name_pair] = (xe, ye)
+        ims[name_pair] = H_data.T
 
     return _plot_projections(
         grids=im_grids,
