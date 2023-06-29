@@ -50,82 +50,108 @@ class ModelBase:
     ###################################################################################
     # Evaluating on grids and plotting
     #
-    def _get_grids_dict(self, grids, coord_names=None):
-        if coord_names is None:
-            coord_names = self.coord_names
+    def _get_grids_2d(self, grids_1d, grid_coord_names):
+        if grids_1d is None:
+            grids_1d = {}
 
-        if grids is None:
-            grids = {}
+        grids_2d = {}
+        for name_pair in grid_coord_names:
+            for name in name_pair:
+                if name not in grids_1d and name not in self.default_grids:
+                    raise ValueError(
+                        f"No default grid for {name}, so you must specify it via the "
+                        "`grids` argument"
+                    )
+            grids_2d[name_pair] = np.meshgrid(
+                *[
+                    grids_1d.get(name, self.default_grids.get(name))
+                    for name in name_pair
+                ]
+            )
 
-        for name in coord_names:
-            if name not in grids and name not in self.default_grids:
-                raise ValueError(f"No default grid for {name}, so you must specify it")
-            if name not in grids:
-                grids[name] = self.default_grids.get(name)
-        return grids
+        return grids_2d
 
-    def evaluate_on_2d_grids(self, grids=None, x_coord="phi1", coord_names=None):
+    def evaluate_on_2d_grids(self, grids=None, grid_coord_names=None):
         """
         Evaluate the log-number density on a 2D grid of coordinates. This is useful for
         creating plots of the predicted model number density.
+
+        TODO:
+        - Note that Pass in bin edges, evaluate on bin centers
+        - grid_coord_names should be a list like [('phi1', 'phi2'), ('phi1', 'pm1')]
         """
-        if coord_names is None:
-            coord_names = self.coord_names
-        grids = self._get_grids_dict(grids, coord_names)
 
-        all_grids = {}
-        terms = {}
-        for name in coord_names:
-            if name == x_coord:
-                continue
+        # TODO: add as another optional argument to this function?
+        # Default "x" coordinate is the 0th coordinate name:
+        default_x_coord = self.coord_names[0]
 
-            grid1, grid2 = np.meshgrid(grids[x_coord], grids[name])
+        if grid_coord_names is None:
+            grid_coord_names = [
+                (default_x_coord, coord) for coord in self.coord_names[1:]
+            ]
 
-            bin_area = np.abs(
-                (grids[x_coord][1] - grids[x_coord][0])
-                * (grids[name][1] - grids[name][0])
-            )
+        # validate grid_coord_names
+        for name_pair in grid_coord_names:
+            for name in name_pair:
+                if name not in self.coord_names:
+                    raise ValueError(f"{name} is not a valid coordinate name")
+
+        grids_2d = self._get_grids_2d(grids, grid_coord_names)
+
+        evals = {}
+
+        for name_pair in grid_coord_names:
+            grid1, grid2 = grids_2d[name_pair]
+
+            # Passed in are the grid edges, but we evaluate at the grid cell centers:
+            bin_area = np.abs(np.diff(grid1[0])[None] * np.diff(grid2[:, 0])[:, None])
+
+            grid1_c = 0.5 * (grid1[:-1, :-1] + grid1[1:, 1:])
+            grid2_c = 0.5 * (grid2[:-1, :-1] + grid2[1:, 1:])
 
             # Fill a data dict with zeros for all coordinates not being plotted
-            # TODO: this is a hack and we take a performance hit for this because we
-            # unnecessarily compute log-probs at nonsense values
-            tmp_data = {x_coord: grid1.ravel()}
-            for tmp_name in coord_names:
-                if tmp_name == name:
-                    tmp_data[tmp_name] = grid2.ravel()
-                elif tmp_name == x_coord:
-                    tmp_data[tmp_name] = grid1.ravel()
-                else:
-                    tmp_data[tmp_name] = jnp.zeros_like(grid1.ravel())
+            tmp_data = {name_pair[0]: grid1_c.ravel(), name_pair[1]: grid2_c.ravel()}
+            for tmp_name in self.coord_names:
+                if tmp_name not in name_pair:
+                    tmp_data[tmp_name] = jnp.zeros_like(tmp_data[name_pair[0]])
 
-                # TODO: hard-coded assumption that data errors are named _err
-                # tmp_data[f"{tmp_name}_err"] = jnp.zeros_like(grid1.ravel())
-
+            # Evaluate the model on the grid
             ln_ps = self.variable_ln_prob_density(tmp_data)
-            ln_n = self._pars["ln_N"] + ln_ps[x_coord] + ln_ps[name] + np.log(bin_area)
-            terms[name] = ln_n.reshape(grid1.shape)
-            all_grids[name] = (grid1, grid2)
 
-        return all_grids, terms
+            if name_pair in self._joint_names:
+                ln_p = ln_ps[name_pair]
+
+            else:
+                ln_p = ln_ps[name_pair[0]] + ln_ps[name_pair[1]]
+
+            ln_n = self._pars["ln_N"] + ln_p.reshape(bin_area.shape) + np.log(bin_area)
+            evals[name_pair] = ln_n
+
+        return grids_2d, evals
 
     def plot_model_projections(
         self,
         grids=None,
+        grid_coord_names=None,
         axes=None,
         label=True,
         pcolormesh_kwargs=None,
-        coord_names=None,
-        x_coord="phi1",
     ):
-        if coord_names is None:
-            coord_names = self.coord_names
+        """
+        TODO:
+        - grids are names like phi1, phi2, etc.
+        - grid_coord_names are tuples like [(phi1, phi2), ...]
+        """
+
+        if grid_coord_names is None:
+            grid_coord_names = [
+                (self.coord_names[0], name) for name in self.coord_names[1:]
+            ]
 
         grids, ln_ns = self.evaluate_on_2d_grids(
-            grids=grids, coord_names=coord_names, x_coord=x_coord
+            grids=grids, grid_coord_names=grid_coord_names
         )
-        ims = {
-            name: np.exp(ln_ns[name]) for name in self.coord_names if name != x_coord
-        }
+        ims = {k: np.exp(v) for k, v in ln_ns.items()}
         return _plot_projections(
             grids=grids,
             ims=ims,
@@ -138,54 +164,62 @@ class ModelBase:
         self,
         data,
         grids=None,
+        grid_coord_names=None,
         axes=None,
         label=True,
         smooth=1.0,
         pcolormesh_kwargs=None,
-        coord_names=None,
-        x_coord="phi1",
     ):
+        """
+        TODO:
+        - grids are names like phi1, phi2, etc.
+        - grid_coord_names are tuples like [(phi1, phi2), ...]
+        """
         from scipy.ndimage import gaussian_filter
 
-        if coord_names is None:
-            coord_names = self.coord_names
+        if grid_coord_names is None:
+            grid_coord_names = [
+                (self.coord_names[0], name) for name in self.coord_names[1:]
+            ]
 
-        grids = self._get_grids_dict(grids, coord_names)
-
-        # Evaluate the model at the grid midpoints
-        model_grids = {k: 0.5 * (g[:-1] + g[1:]) for k, g in grids.items()}
-        im_grids, ln_ns = self.evaluate_on_2d_grids(grids=model_grids, x_coord=x_coord)
-        model_ims = {
-            name: np.exp(ln_ns[name]) for name in self.coord_names if name != x_coord
+        if grids is None:
+            grids = {}
+        coord_names = [name for name_pair in grid_coord_names for name in name_pair]
+        grids_1d = {
+            name: grids.get(name, self.default_grids.get(name)) for name in coord_names
         }
 
-        resid_ims = {}
-        for name in self.coord_names:
-            if name == x_coord:
-                continue
+        # Evaluate the model at the grid midpoints
+        im_grids, ln_ns = self.evaluate_on_2d_grids(
+            grids=grids, grid_coord_names=grid_coord_names
+        )
 
+        model_ims = {k: np.exp(v) for k, v in ln_ns.items()}
+
+        resid_ims = {}
+        for name_pair, model_im in model_ims.items():
             # get the number density: density=True is the prob density, so need to
             # multiply back in the total number of data points
-            # TODO: slightly wrong because histogram2d takes edges, but want to evaluate
-            # on grid centers
             H_data, *_ = np.histogram2d(
-                data["phi1"],
-                data[name],
-                bins=(grids["phi1"], grids[name]),
+                data[name_pair[0]],
+                data[name_pair[1]],
+                bins=(grids_1d[name_pair[0]], grids_1d[name_pair[1]]),
             )
             data_im = H_data.T
 
-            resid_ims[name] = model_ims[name] - data_im
+            resid = model_im - data_im
+            resid_ims[name_pair] = resid
 
             if smooth is not None:
-                resid_ims[name] = gaussian_filter(resid_ims[name], smooth)
+                resid_ims[name_pair] = gaussian_filter(resid_ims[name_pair], smooth)
 
         if pcolormesh_kwargs is None:
             pcolormesh_kwargs = {}
         pcolormesh_kwargs.setdefault("cmap", "coolwarm_r")
-        # TODO: hard-coded 10 - could be a percentile?
-        pcolormesh_kwargs.setdefault("vmin", -10)
-        pcolormesh_kwargs.setdefault("vmax", 10)
+        # TODO: based on residuals of last coordinate pair, but should use all residuals
+        v = np.abs(np.nanpercentile(resid, [1, 99])).max()
+        pcolormesh_kwargs.setdefault("vmin", -v)
+        pcolormesh_kwargs.setdefault("vmax", v)
 
         return _plot_projections(
             grids=im_grids,
@@ -271,12 +305,21 @@ class StreamModel(ModelBase, abc.ABC):
         cls._joint_names_inv = {v: k for k, v in cls._joint_names.items()}
         cls.coord_names = tuple(cls.coord_names)
 
-        # Validate the data_required dictionary to make sure it's valid TODO
+        # TODO: Validate the data_required dictionary to make sure it has valid keys
         if cls.data_required is None:
             cls.data_required = {}
 
         # TODO: need to document assumption that data errors are passed in as _err keys
-        cls._data_required = {k: {"y": k, "y_err": f"{k}_err"} for k in cls.variables}
+        cls._data_required = cls.data_required.copy()
+        for k in cls.variables:
+            if isinstance(k, str):
+                cls._data_required = {
+                    k: {"y": k, "y_err": f"{k}_err"} for k in cls.variables
+                }
+            else:  # assumed tuple/iterable
+                err = tuple([f"{kk}_err" for kk in k])
+                cls._data_required = {k: {"y": k, "y_err": err} for k in cls.variables}
+
         for k, v in cls.data_required.items():
             if k not in cls.variables:
                 raise ValueError(
@@ -351,11 +394,13 @@ class StreamModel(ModelBase, abc.ABC):
         for comp_name, comp in self.variables.items():
             # NOTE: this silently ignores any data that is not present, even if expected
             # in the _data_required dict
-            data_kw = {
-                k: data[v]
-                for k, v in self._data_required[comp_name].items()
-                if v in data
-            }
+            data_kw = {}
+            for k, v in self._data_required[comp_name].items():
+                if v in data:
+                    data_kw[k] = data[v]
+                elif isinstance(v, tuple):
+                    data_kw[k] = jnp.stack(jnp.array([data[vv] for vv in v])).T
+
             comp_ln_probs[comp_name] = comp.ln_prob(
                 params=self._pars[comp_name], **data_kw
             )
