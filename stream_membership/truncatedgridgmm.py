@@ -9,34 +9,6 @@ from numpyro.distributions.util import promote_shapes
 __all__ = ["TruncatedGridGMM"]
 
 
-class _LeftExtendedReal(constraints.Constraint):
-    """
-    Any number in the interval [-inf, inf).
-    """
-
-    def __call__(self, x):
-        return (x == x) & (x != float("inf"))
-
-    def feasible_like(self, prototype):
-        return jnp.zeros_like(prototype)
-
-
-class _RightExtendedReal(constraints.Constraint):
-    """
-    Any number in the interval (-inf, inf].
-    """
-
-    def __call__(self, x):
-        return (x == x) & (x != float("-inf"))
-
-    def feasible_like(self, prototype):
-        return jnp.zeros_like(prototype)
-
-
-left_extended_real = _LeftExtendedReal()
-right_extended_real = _RightExtendedReal()
-
-
 class _IntervalVector(_IndependentConstraint):
     def __init__(self, lower_bound, upper_bound):
         super().__init__(_Interval(lower_bound, upper_bound), 1)
@@ -55,8 +27,8 @@ class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
     arg_constraints = {
         "locs": constraints.real,
         "scales": constraints.positive,
-        "low": left_extended_real,
-        "high": right_extended_real,
+        "low": constraints.less_than(float("inf")),
+        "high": constraints.greater_than(-float("inf")),
     }
     reparametrized_params = ["locs", "scales", "low", "high"]
 
