@@ -641,11 +641,11 @@ class StreamMixtureModel(ModelBase):
         N = jnp.sum(jnp.array([c.get_N() for c in self.components]))
         return -N + self.ln_number_density(data).sum()
 
-    def evaluate_on_2d_grids(self, grids=None, x_coord="phi1", coord_names=None):
+    def evaluate_on_2d_grids(self, grids=None, grid_coord_names=None):
         terms = {}
         for component in self.components:
             all_grids, component_terms = component.evaluate_on_2d_grids(
-                grids, x_coord, coord_names
+                grids=grids, grid_coord_names=grid_coord_names
             )
             for k, v in component_terms.items():
                 if k not in terms:
@@ -667,7 +667,7 @@ class StreamMixtureModel(ModelBase):
         return bounds
 
     @classmethod
-    @partial(jax.jit, static_argnums=(0, 3))
+    # @partial(jax.jit, static_argnums=(0, 3))
     def _objective(cls, p, data, Components):
         """
         TODO: keys of inputs have to be normalized to remove tuples
@@ -702,7 +702,7 @@ class StreamMixtureModel(ModelBase):
 
         if jaxopt_kwargs is None:
             jaxopt_kwargs = {}
-        jaxopt_kwargs.setdefault("maxiter", 1024)  # TODO: TOTALLY ARBITRARY
+        jaxopt_kwargs.setdefault("maxiter", 2048)  # TODO: TOTALLY ARBITRARY
 
         optimize_kwargs = {}
         if use_bounds:

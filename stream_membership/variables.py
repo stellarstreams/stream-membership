@@ -113,20 +113,27 @@ class Normal1DVariable(VariableBase):
 class Normal1DSplineVariable(VariableBase):
     param_names = ("mean", "ln_std")
 
-    def __init__(self, param_priors, knots, spline_k=3, coord_bounds=None):
+    def __init__(self, param_priors, knots, spline_ks=3, coord_bounds=None):
         """
         Parameters:
         -----------
         knots : array-like
             Array of spline knot locations (i.e. the "x" locations).
-        spline_k : int (optional)
-            The spline polynomial degree. Default is 3 (cubic splines).
+        spline_ks : int, dict (optional)
+            The spline polynomial degree. Default is 3 (cubic splines). Pass in a dict
+            with keys matching the parameter names to control the degree of each spline
+            separately.
         coord_bounds : tuple (optional)
             An iterable with two elements to specify the lower and upper bounds of the
             component value s (i.e. the "y" value bounds).
         """
 
-        self.spline_k = int(spline_k)
+        if isinstance(spline_ks, int):
+            self.spline_ks = {k: spline_ks for k in self.param_names}
+        elif isinstance(spline_ks, dict):
+            self.spline_ks = {k: spline_ks.get(k, 3) for k in self.param_names}
+        else:
+            raise TypeError("Invalid type for spline_ks - must be int or dict")
         self.knots = jnp.array(knots)
 
         # TODO: make this customizable?
@@ -135,13 +142,12 @@ class Normal1DSplineVariable(VariableBase):
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 
     def get_dist(self, params, x, y_err=0.0):
-        # TODO: I think this has to go here, and not in init
         self.splines = {}
         for name in self.param_names:
             self.splines[name] = InterpolatedUnivariateSpline(
                 self.knots,
                 params[name],
-                k=self.spline_k,
+                k=self.spline_ks[name],
                 endpoints=self._endpoints,
             )
 
@@ -150,6 +156,43 @@ class Normal1DSplineVariable(VariableBase):
             scale=jnp.sqrt(jnp.exp(2 * self.splines["ln_std"](x)) + y_err**2),
             low=self.coord_bounds[0],
             high=self.coord_bounds[1],
+        )
+
+
+class Normal1DSplineMixtureVariable(Normal1DSplineVariable):
+    param_names = ("w", "mean1", "ln_std1", "mean2", "ln_std2")
+
+    def get_dist(self, params, x, y_err=0.0):
+        self.splines = {}
+        for name in self.param_names:
+            self.splines[name] = InterpolatedUnivariateSpline(
+                self.knots,
+                params[name],
+                k=self.spline_ks[name],
+                endpoints=self._endpoints,
+            )
+
+        locs = jnp.stack(
+            jnp.array([self.splines["mean1"](x), self.splines["mean2"](x)])
+        ).T
+
+        var1 = jnp.exp(2 * self.splines["ln_std1"](x))
+        var2 = var1 + jnp.exp(2 * self.splines["ln_std2"](x))
+        scales = jnp.sqrt(
+            jnp.stack(jnp.array([var1 + y_err**2, var2 + y_err**2]))
+        ).T
+
+        w = self.splines["w"](x)
+        probs = jnp.stack(jnp.array([w, 1 - w]))
+
+        return dist.MixtureSameFamily(
+            dist.Categorical(probs=probs.T),
+            dist.TruncatedNormal(
+                loc=locs,
+                scale=scales,
+                low=self.coord_bounds[0],
+                high=self.coord_bounds[1],
+            ),
         )
 
 
