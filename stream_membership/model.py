@@ -368,7 +368,7 @@ class StreamModel(ModelBase, abc.ABC):
             name = cls._joint_names.get(comp_name, comp_name)
             pars[comp_name] = comp.setup_numpyro(name_prefix=f"{cls.name}-{name}-")
 
-        obj = cls(pars=pars)
+        obj = cls(params=pars)
 
         if data is not None:
             # Compute the log of the effective volume integral, used in the poisson
@@ -463,6 +463,53 @@ class StreamModel(ModelBase, abc.ABC):
                 out[k] = v
         return out
 
+    @classmethod
+    def _strip_model_name(cls, packed_pars):
+        """
+        Remove the model component name from the parameter names of a packed parameter
+        dictionary.
+        """
+        return {k[len(cls.name) + 1 :]: v for k, v in packed_pars.items()}
+
+    @classmethod
+    def _unpack_params(cls, packed_pars):
+        """
+        Unpack a flat dictionary of parameters -- where keys have coordinate name,
+        parameter name, and model component name -- into a nested dictionary with
+        parameters grouped by coordinate name
+        """
+        packed_pars = cls._strip_model_name(packed_pars)
+
+        pars = {}
+        for k in packed_pars.keys():
+            if k == "ln_N":
+                pars["ln_N"] = packed_pars["ln_N"]
+                continue
+
+            coord_name = k.split("_")[0]
+            par_name = "_".join(k.split("_")[1:])
+            if coord_name not in pars:
+                pars[coord_name] = {}
+            pars[coord_name][par_name] = packed_pars[k]
+
+        return pars
+
+    @classmethod
+    def _pack_params(cls, pars):
+        """
+        Pack a nested dictionary of parameters into a flat dictionary where the keys
+        correspond to the numpyro.sample() parameter names
+        """
+        packed_pars = {}
+        packed_pars[f"{cls.name}-ln_N"] = pars["ln_N"]
+
+        for k, v in pars.items():
+            if k != "ln_N":
+                for kk in v:
+                    packed_pars[f"{cls.name}-{k}-{kk}"] = v[kk]
+
+        return packed_pars
+
     ###################################################################################
     # Optimization
     #
@@ -487,41 +534,6 @@ class StreamModel(ModelBase, abc.ABC):
         return (bounds_l, bounds_h)
 
     # OLD STUFF BELOW - SAVING FOR POSTERITY
-    ###################################################################################
-    # Utilities for manipulating parameters
-    #
-    # Below only needed for optimize_numpyro()
-    # @classmethod
-    # def _strip_model_name(cls, packed_pars):
-    #     """
-    #     Remove the model component name from the parameter names of a packed parameter
-    #     dictionary.
-    #     """
-    #     return {k[len(cls.name) + 1 :]: v for k, v in packed_pars.items()}
-
-    # @classmethod
-    # def unpack_params(cls, packed_pars):
-    #     """
-    #     Unpack a flat dictionary of parameters -- where keys have coordinate name,
-    #     parameter name, and model component name -- into a nested dictionary with
-    #     parameters grouped by coordinate name
-    #     """
-    #     packed_pars = cls._strip_model_name(packed_pars)
-
-    #     pars = {}
-    #     for k in packed_pars.keys():
-    #         if k == "ln_N":
-    #             pars["ln_N"] = packed_pars["ln_N"]
-    #             continue
-
-    #         coord_name = k.split("_")[0]
-    #         par_name = "_".join(k.split("_")[1:])
-    #         if coord_name not in pars:
-    #             pars[coord_name] = {}
-    #         pars[coord_name][par_name] = packed_pars[k]
-
-    #     return pars
-
     ###################################################################################
     # Optimization
     #
