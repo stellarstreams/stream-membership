@@ -68,6 +68,8 @@ class VariableBase:
             # bounds based on support of prior
             lb = getattr(self.param_priors[name].support, "lower_bound", -jnp.inf)
             ub = getattr(self.param_priors[name].support, "upper_bound", jnp.inf)
+            lb = jnp.broadcast_to(lb, self.param_priors[name].batch_shape)
+            ub = jnp.broadcast_to(ub, self.param_priors[name].batch_shape)
             self._param_bounds[name] = (lb, ub)
 
     def setup_numpyro(self, name_prefix=""):
