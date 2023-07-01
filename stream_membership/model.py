@@ -679,13 +679,11 @@ class StreamMixtureModel(ModelBase):
     def _objective(cls, p, data, Components):
         """
         TODO: keys of inputs have to be normalized to remove tuples
-
-        TODO: just realized a problem with this: if one component has a joint for phi1,
-        phi2 and others don't, this won't work
         """
         p = {C.name: C._expand_variable_keys(p[C.name]) for C in Components}
 
-        # TODO see note about above one component having a joint for phi1, phi2
+        # TODO: handle tied parameters here
+
         data = Components[0]._expand_variable_keys(data)
         model = cls(params=p, Components=Components)
         ll = model.ln_likelihood(data)
@@ -730,9 +728,7 @@ class StreamMixtureModel(ModelBase):
                 C.name: C._normalize_variable_keys(init_params[C.name])
                 for C in Components
             },
-            data=Components[0]._normalize_variable_keys(
-                data
-            ),  # TODO: see issue about joint phi1, phi2
+            data=Components[0]._normalize_variable_keys(data),
             **optimize_kwargs,
         )
         opt_p = {
