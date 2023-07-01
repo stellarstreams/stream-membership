@@ -11,6 +11,7 @@ import numpyro.distributions as dist
 from jax.scipy.special import logsumexp
 
 from .plot import _plot_projections
+from .utils import get_from_nested_dict, set_in_nested_dict
 
 
 class ModelBase:
@@ -333,7 +334,7 @@ class StreamModel(ModelBase, abc.ABC):
         for name, thing in inspect.getmembers(cls):
             if inspect.isfunction(thing) or inspect.ismethod(thing):
                 continue
-            elif name.startswith("_"):
+            elif name.startswith("_") or name == "variables":
                 continue
             setattr(cls, name, copy.deepcopy(getattr(cls, name)))
 
@@ -578,7 +579,14 @@ class StreamModel(ModelBase, abc.ABC):
 
 
 class StreamMixtureModel(ModelBase):
-    def __init__(self, params, Components):
+    def __init__(self, params, Components, tied_params=None):
+        if tied_params is None:
+            tied_params = []
+
+        for t1, t2 in tied_params:
+            # t1 could be, e.g, ("stream", "pm1") or ("stream", "pm1", "mean")
+            set_in_nested_dict(params, t1, get_from_nested_dict(params, t2))
+
         self.components = [C(params[C.name]) for C in Components]
         if len(self.components) < 1:
             raise ValueError("You must pass at least one component")
@@ -702,7 +710,7 @@ class StreamMixtureModel(ModelBase):
 
         if jaxopt_kwargs is None:
             jaxopt_kwargs = {}
-        jaxopt_kwargs.setdefault("maxiter", 2048)  # TODO: TOTALLY ARBITRARY
+        jaxopt_kwargs.setdefault("maxiter", 8192)  # TODO: TOTALLY ARBITRARY
 
         optimize_kwargs = {}
         if use_bounds:
