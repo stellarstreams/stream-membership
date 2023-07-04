@@ -11,7 +11,7 @@ import numpyro.distributions as dist
 from jax.scipy.special import logsumexp
 
 from .plot import _plot_projections
-from .utils import get_from_nested_dict, set_in_nested_dict
+from .utils import del_in_nested_dict, get_from_nested_dict, set_in_nested_dict
 
 
 class ModelBase:
@@ -27,7 +27,7 @@ class ModelBase:
             jaxopt_kwargs = {}
         jaxopt_kwargs.setdefault("maxiter", 1024)  # TODO: TOTALLY ARBITRARY
 
-        optimize_kwargs = {}
+        optimize_kwargs = kwargs
         if use_bounds:
             jaxopt_kwargs.setdefault("method", "L-BFGS-B")
             optimize_kwargs["bounds"] = cls._get_jaxopt_bounds()
@@ -348,7 +348,7 @@ class StreamModel(ModelBase, abc.ABC):
     ###################################################################################
     # Methods that can be overridden in subclasses:
     #
-    def extra_ln_prior(self):
+    def extra_ln_prior(self, params):
         """
         A log-prior to add to the total log-probability. This is useful for adding
         custom priors or regularizations that are not part of the model components.
@@ -377,7 +377,7 @@ class StreamModel(ModelBase, abc.ABC):
             ln_n = obj.ln_number_density(data)
             numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())
             numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
-            numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior())
+            numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior(pars))
 
         return obj
 
@@ -431,7 +431,7 @@ class StreamModel(ModelBase, abc.ABC):
         p = cls._expand_variable_keys(p)
         data = cls._expand_variable_keys(data)
         model = cls(params=p, *args, **kwargs)
-        ll = model.ln_likelihood(data)
+        ll = model.ln_likelihood(data) + model.extra_ln_prior(p)
         N = next(iter(data.values())).shape[0]
         return -ll / N
 
@@ -582,8 +582,10 @@ class StreamMixtureModel(ModelBase):
     def __init__(self, params, Components, tied_params=None):
         if tied_params is None:
             tied_params = []
+        self.tied_params = list(tied_params)
 
-        for t1, t2 in tied_params:
+        params = copy.deepcopy(params)
+        for t1, t2 in self.tied_params:
             # t1 could be, e.g, ("stream", "pm1") or ("stream", "pm1", "mean")
             set_in_nested_dict(params, t1, get_from_nested_dict(params, t2))
 
@@ -616,7 +618,7 @@ class StreamMixtureModel(ModelBase):
             # Compute the log of the effective volume integral, used in the poisson
             # process likelihood
             ln_n = obj.ln_number_density(data)
-            numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())
+            numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())  # TODO: not defined
             numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
             numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior())
 
@@ -649,6 +651,11 @@ class StreamMixtureModel(ModelBase):
         N = jnp.sum(jnp.array([c.get_N() for c in self.components]))
         return -N + self.ln_number_density(data).sum()
 
+    def extra_ln_prior(self, params):
+        return jnp.sum(
+            jnp.array([c.extra_ln_prior(params[c.name]) for c in self.components])
+        )
+
     def evaluate_on_2d_grids(self, grids=None, grid_coord_names=None):
         terms = {}
         for component in self.components:
@@ -664,29 +671,33 @@ class StreamMixtureModel(ModelBase):
         return all_grids, terms
 
     @classmethod
-    def _get_jaxopt_bounds(cls, Components):
+    def _get_jaxopt_bounds(cls, Components, tied_params):
         bounds_l = {}
         bounds_h = {}
         for C in Components:
             _bounds = C._get_jaxopt_bounds()
             bounds_l[C.name] = C._normalize_variable_keys(_bounds[0])
             bounds_h[C.name] = C._normalize_variable_keys(_bounds[1])
+
         bounds = (bounds_l, bounds_h)
+
+        if tied_params is not None:
+            for b in bounds:
+                for t1, _ in tied_params:
+                    del_in_nested_dict(b, t1)
+
         return bounds
 
     @classmethod
-    # @partial(jax.jit, static_argnums=(0, 3))
-    def _objective(cls, p, data, Components):
+    def _objective(cls, p, data, Components, tied_params=None):
         """
         TODO: keys of inputs have to be normalized to remove tuples
         """
         p = {C.name: C._expand_variable_keys(p[C.name]) for C in Components}
 
-        # TODO: handle tied parameters here
-
         data = Components[0]._expand_variable_keys(data)
-        model = cls(params=p, Components=Components)
-        ll = model.ln_likelihood(data)
+        model = cls(params=p, Components=Components, tied_params=tied_params)
+        ll = model.ln_likelihood(data) + model.extra_ln_prior(p)
         N = next(iter(data.values())).shape[0]
         return -ll / N
 
@@ -710,10 +721,12 @@ class StreamMixtureModel(ModelBase):
             jaxopt_kwargs = {}
         jaxopt_kwargs.setdefault("maxiter", 8192)  # TODO: TOTALLY ARBITRARY
 
-        optimize_kwargs = {}
+        tied_params = kwargs.pop("tied_params", None)
+
+        optimize_kwargs = kwargs
         if use_bounds:
             jaxopt_kwargs.setdefault("method", "L-BFGS-B")
-            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds(Components)
+            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds(Components, tied_params)
             Optimizer = jaxopt.ScipyBoundedMinimize
         else:
             jaxopt_kwargs.setdefault("method", "BFGS")
@@ -721,7 +734,11 @@ class StreamMixtureModel(ModelBase):
 
         optimizer = Optimizer(
             **jaxopt_kwargs,
-            fun=partial(cls._objective, Components=Components),
+            fun=partial(
+                cls._objective,
+                Components=Components,
+                tied_params=tied_params,
+            ),
         )
         opt_res = optimizer.run(
             init_params={

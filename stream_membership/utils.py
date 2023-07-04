@@ -18,3 +18,7 @@ def get_from_nested_dict(data, key_list):
 
 def set_in_nested_dict(data, key_list, value):
     get_from_nested_dict(data, key_list[:-1])[key_list[-1]] = value
+
+
+def del_in_nested_dict(data, key_list):
+    del get_from_nested_dict(data, key_list[:-1])[key_list[-1]]
