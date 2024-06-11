@@ -178,9 +178,7 @@ class Normal1DSplineMixtureVariable(Normal1DSplineVariable):
 
         var1 = jnp.exp(2 * self.splines["ln_std1"](x))
         var2 = var1 + jnp.exp(2 * self.splines["ln_std2"](x))
-        scales = jnp.sqrt(
-            jnp.stack(jnp.array([var1 + y_err**2, var2 + y_err**2]))
-        ).T
+        scales = jnp.sqrt(jnp.stack(jnp.array([var1 + y_err**2, var2 + y_err**2]))).T
 
         w = self.splines["w"](x)
         probs = jnp.stack(jnp.array([w, 1 - w]))
