@@ -16,7 +16,8 @@ class CustomJAXOptMinimize(_NumPyroOptim):
         try:
             import jaxopt  # noqa
         except ImportError:
-            raise ImportError("jaxopt must be installed to use JAXOptMinimize")
+            msg = "jaxopt must be installed to use JAXOptMinimize"
+            raise ImportError(msg)
 
         super().__init__(_jaxopt_wrapper)
         self.solver_kwargs = {} if kwargs is None else kwargs
@@ -28,9 +29,8 @@ class CustomJAXOptMinimize(_NumPyroOptim):
         def loss(p):
             out, aux = fn(p)
             if aux is not None:
-                raise ValueError(
-                    "JAXOptMinimize does not support models with mutable states."
-                )
+                msg = "JAXOptMinimize does not support models with mutable states."
+                raise ValueError(msg)
             return out * self._loss_scale
 
         solver = ScipyMinimize(fun=loss, **self.solver_kwargs)
@@ -48,7 +48,8 @@ class CustomJAXOptBoundedMinimize(_NumPyroOptim):
         try:
             import jaxopt  # noqa
         except ImportError:
-            raise ImportError("jaxopt must be installed")
+            msg = "jaxopt must be installed"
+            raise ImportError(msg)
 
         super().__init__(_jaxopt_wrapper)
         self.solver_kwargs = {} if kwargs is None else kwargs
@@ -61,9 +62,8 @@ class CustomJAXOptBoundedMinimize(_NumPyroOptim):
         def loss(p):
             out, aux = fn(p)
             if aux is not None:
-                raise ValueError(
-                    "JAXOptMinimize does not support models with mutable states."
-                )
+                msg = "JAXOptMinimize does not support models with mutable states."
+                raise ValueError(msg)
             return out * self._loss_scale
 
         solver = ScipyBoundedMinimize(fun=loss, **self.solver_kwargs)

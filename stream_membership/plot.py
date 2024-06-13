@@ -6,7 +6,8 @@ def _plot_projections(grids, ims, axes=None, label=True, pcolormesh_kwargs=None)
 
     grid_coord_names = list(grids.keys())
     if len(grid_coord_names) < 1:
-        raise ValueError("You must pass in some grids")
+        msg = "You must pass in some grids"
+        raise ValueError(msg)
     # TODO: Check that grids.keys() and ims.keys() are the same
 
     _default_labels = {
@@ -22,7 +23,7 @@ def _plot_projections(grids, ims, axes=None, label=True, pcolormesh_kwargs=None)
 
     # Check that all x coord names are the same
     sharex = all(
-        [name_pair[0] == grid_coord_names[0][0] for name_pair in grid_coord_names]
+        name_pair[0] == grid_coord_names[0][0] for name_pair in grid_coord_names
     )
 
     if axes is None:

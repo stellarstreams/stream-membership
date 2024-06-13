@@ -33,7 +33,7 @@ dependencies = [
 
 [tool.hatch]
 version.source = "vcs"
-build.hooks.vcs.version-file = "gd1_helpers/_version.py"
+build.hooks.vcs.version-file = "stream_membership/_version.py"
 
 [tool.hatch.env.default]
 features = ["test"]
@@ -61,6 +61,10 @@ local_scheme = "no-local-version"
 #   '\.\.\.',
 #   'if typing.TYPE_CHECKING:',
 # ]
+
+# NOTE: disable mypy type checks
+[tool.mypy]
+exclude =  ["stream_membership"]
 
 [tool.ruff]
 
@@ -101,17 +105,17 @@ ignore = [
 # "noxfile.py" = ["T20"]
 
 
-[tool.pylint]
-py-version = "3.10"
-ignore-paths = [".*/_version.py"]
-reports.output-format = "colorized"
-similarities.ignore-imports = "yes"
-messages_control.disable = [
-  "W",
-  "C",
-  "design",
-  "fixme",
-  "line-too-long",
-  "missing-module-docstring",
-  "wrong-import-position",
-]
+# [tool.pylint]
+# py-version = "3.10"
+# ignore-paths = [".*/_version.py"]
+# reports.output-format = "colorized"
+# similarities.ignore-imports = "yes"
+# messages_control.disable = [
+#   "W",
+#   "C",
+#   "design",
+#   "fixme",
+#   "line-too-long",
+#   "missing-module-docstring",
+#   "wrong-import-position",
+# ]

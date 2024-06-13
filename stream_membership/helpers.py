@@ -3,8 +3,6 @@ import jax.numpy as jnp
 import jax.scipy as jsci
 import numpyro.distributions as dist
 
-from .truncnorm import CustomTruncatedNormal
-
 __all__ = ["ln_simpson"]
 
 
@@ -18,7 +16,8 @@ def ln_simpson(ln_y, x):
     dx = jnp.diff(x)[0]
     num_points = len(x)
     if num_points // 2 == num_points / 2:
-        raise ValueError("Because of laziness, the input size must be odd")
+        msg = "Because of laziness, the input size must be odd"
+        raise ValueError(msg)
 
     weights_first = jnp.asarray([1.0])
     weights_mid = jnp.tile(jnp.asarray([4.0, 2.0]), [(num_points - 3) // 2])

@@ -23,16 +23,12 @@ class VariableBase:
         required_methods = ["get_dist"]
         for f in required_methods:
             if getattr(cls, f) is getattr(__class__, f):
-                raise ValueError(
-                    "Subclasses of VariableBase must implement methods for: "
-                    f"{required_methods}"
-                )
+                msg = f"Subclasses of VariableBase must implement methods for: {required_methods}"
+                raise ValueError(msg)
 
         if cls.param_names is None:
-            raise ValueError(
-                "Subclasses of VariableBase must specify an iterable of string "
-                "parameter names as the `param_names` attribute."
-            )
+            msg = "Subclasses of VariableBase must specify an iterable of string parameter names as the `param_names` attribute."
+            raise ValueError(msg)
         cls.param_names = tuple(cls.param_names)
 
     def __init__(self, param_priors, coord_bounds=None):
@@ -44,10 +40,7 @@ class VariableBase:
             component value s (i.e. the "y" value bounds).
         """
 
-        if coord_bounds is None:
-            coord_bounds = (None, None)
-        else:
-            coord_bounds = tuple(coord_bounds)
+        coord_bounds = (None, None) if coord_bounds is None else tuple(coord_bounds)
         self.coord_bounds = coord_bounds
 
         if param_priors is None:
@@ -55,15 +48,13 @@ class VariableBase:
         self.param_priors = dict(param_priors)
 
         # to be filled below with parameter bounds
-        self._param_bounds = dict()
+        self._param_bounds = {}
 
         # check that all expected param names are specified:
         for name in self.param_names:
             if name not in self.param_priors:
-                raise ValueError(
-                    f"Missing parameter: {name} - you must specify a prior for all "
-                    "parameters"
-                )
+                msg = f"Missing parameter: {name} - you must specify a prior for all parameters"
+                raise ValueError(msg)
 
             # bounds based on support of prior
             lb = getattr(self.param_priors[name].support, "lower_bound", -jnp.inf)
@@ -88,7 +79,7 @@ class VariableBase:
     @partial(jax.jit, static_argnums=(0,))
     def ln_prob(self, params, y, *args, **kwargs):
         d = self.get_dist(params, *args, **kwargs)
-        return d.log_prob(y.reshape((-1,) + d.event_shape))
+        return d.log_prob(y.reshape((-1, *d.event_shape)))
 
 
 class UniformVariable(VariableBase):
@@ -133,7 +124,8 @@ class Normal1DSplineVariable(VariableBase):
         elif isinstance(spline_ks, dict):
             self.spline_ks = {k: spline_ks.get(k, 3) for k in self.param_names}
         else:
-            raise TypeError("Invalid type for spline_ks - must be int or dict")
+            msg = "Invalid type for spline_ks - must be int or dict"
+            raise TypeError(msg)
         self.knots = jnp.array(knots)
 
         # TODO: make this customizable?
@@ -211,7 +203,8 @@ class GridGMMVariable(VariableBase):
         self.scales = jnp.array(scales)
         for name in ["locs", "scales"]:
             if getattr(self, name).ndim != 2:
-                raise ValueError(f"{name} must be a 2D array.")
+                msg = f"{name} must be a 2D array."
+                raise ValueError(msg)
 
         super().__init__(param_priors=param_priors, coord_bounds=coord_bounds)
 

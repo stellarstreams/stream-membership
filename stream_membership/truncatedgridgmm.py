@@ -134,4 +134,5 @@ class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
         return jax.nn.log_softmax(self.mixing_distribution.logits) + component_log_probs
 
     def sample(self, *args, **kwargs):
-        raise NotImplementedError("sample() is not implemented yet")
+        msg = "sample() is not implemented yet"
+        raise NotImplementedError(msg)

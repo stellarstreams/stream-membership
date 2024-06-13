@@ -3,11 +3,9 @@ import copy
 import inspect
 from functools import partial
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import numpyro
-import numpyro.distributions as dist
 from jax.scipy.special import logsumexp
 
 from .plot import _plot_projections
@@ -29,13 +27,12 @@ class ModelBase:
 
         optimize_kwargs = kwargs
         if use_bounds:
-            jaxopt_kwargs.setdefault("method", "L-BFGS-B")
             optimize_kwargs["bounds"] = cls._get_jaxopt_bounds()
             optimize_kwargs["bounds"] = (
                 cls._normalize_variable_keys(optimize_kwargs["bounds"][0]),
                 cls._normalize_variable_keys(optimize_kwargs["bounds"][1]),
             )
-            Optimizer = jaxopt.ScipyBoundedMinimize
+            Optimizer = jaxopt.LBFGSB
         else:
             jaxopt_kwargs.setdefault("method", "BFGS")
             Optimizer = jaxopt.ScipyMinimize
@@ -59,10 +56,8 @@ class ModelBase:
         for name_pair in grid_coord_names:
             for name in name_pair:
                 if name not in grids_1d and name not in self.default_grids:
-                    raise ValueError(
-                        f"No default grid for {name}, so you must specify it via the "
-                        "`grids` argument"
-                    )
+                    msg = f"No default grid for {name}, so you must specify it via the `grids` argument"
+                    raise ValueError(msg)
             grids_2d[name_pair] = np.meshgrid(
                 *[
                     grids_1d.get(name, self.default_grids.get(name))
@@ -95,7 +90,8 @@ class ModelBase:
         for name_pair in grid_coord_names:
             for name in name_pair:
                 if name not in self.coord_names:
-                    raise ValueError(f"{name} is not a valid coordinate name")
+                    msg = f"{name} is not a valid coordinate name"
+                    raise ValueError(msg)
 
         grids_2d = self._get_grids_2d(grids, grid_coord_names)
 
@@ -275,17 +271,12 @@ class StreamModel(ModelBase, abc.ABC):
 
     def __init_subclass__(cls):
         if cls.name is None:
-            raise ValueError(
-                "You must set a name for this model component using the `name` class "
-                "attribute."
-            )
+            msg = "You must set a name for this model component using the `name` class attribute."
+            raise ValueError(msg)
 
         if cls.variables is None:
-            raise ValueError(
-                "You must define variables for this model by defining the dictionary "
-                "`variables` to contain keys for each coordinate to model and values "
-                "as instances of Component classes."
-            )
+            msg = "You must define variables for this model by defining the dictionary `variables` to contain keys for each coordinate to model and values as instances of Component classes."
+            raise ValueError(msg)
 
         # Now we validate the keys of .variables, and detect any joint distributions
         cls.coord_names = []
@@ -302,7 +293,8 @@ class StreamModel(ModelBase, abc.ABC):
                     cls.coord_names.append(kk)
 
             else:
-                raise ValueError(f"Invalid key type '{k}' in variables: type={type(k)}")
+                msg = f"Invalid key type '{k}' in variables: type={type(k)}"
+                raise ValueError(msg)
         cls._joint_names_inv = {v: k for k, v in cls._joint_names.items()}
         cls.coord_names = tuple(cls.coord_names)
 
@@ -323,10 +315,8 @@ class StreamModel(ModelBase, abc.ABC):
 
         for k, v in cls.data_required.items():
             if k not in cls.variables:
-                raise ValueError(
-                    f"Invalid data required key '{k}' (it doesn't exist in the "
-                    "variables dictionary)"
-                )
+                msg = f"Invalid data required key '{k}' (it doesn't exist in the variables dictionary)"
+                raise ValueError(msg)
             cls._data_required[k] = v
 
         # Do this otherwise all subclasses will share the same mutables (i.e. dictionary
@@ -340,7 +330,8 @@ class StreamModel(ModelBase, abc.ABC):
 
         # name value is required:
         if not cls.__name__.endswith("Base") and cls.name is None:
-            raise ValueError("you must specify a model component name")
+            msg = "you must specify a model component name"
+            raise ValueError(msg)
 
         if cls.default_grids is None:
             cls.default_grids = {}
@@ -412,7 +403,7 @@ class StreamModel(ModelBase, abc.ABC):
         The total log-probability evaluated at the input data values.
         """
         comp_ln_probs = self.variable_ln_prob_density(data)
-        return jnp.sum(jnp.array([v for v in comp_ln_probs.values()]), axis=0)
+        return jnp.sum(jnp.array(list(comp_ln_probs.values())), axis=0)
 
     def ln_number_density(self, data):
         return self._pars["ln_N"] + self.ln_prob_density(data)
@@ -482,7 +473,7 @@ class StreamModel(ModelBase, abc.ABC):
         packed_pars = cls._strip_model_name(packed_pars)
 
         pars = {}
-        for k in packed_pars.keys():
+        for k in packed_pars:
             if k == "ln_N":
                 pars["ln_N"] = packed_pars["ln_N"]
                 continue
@@ -591,7 +582,8 @@ class StreamMixtureModel(ModelBase):
 
         self.components = [C(params[C.name]) for C in Components]
         if len(self.components) < 1:
-            raise ValueError("You must pass at least one component")
+            msg = "You must pass at least one component"
+            raise ValueError(msg)
 
         self.coord_names = None
         for component in self.components:
@@ -599,9 +591,8 @@ class StreamMixtureModel(ModelBase):
                 self.coord_names = tuple(component.coord_names)
             else:
                 if self.coord_names != tuple(component.coord_names):
-                    raise ValueError(
-                        "All components must have the same set of coordinate names"
-                    )
+                    msg = "All components must have the same set of coordinate names"
+                    raise ValueError(msg)
 
         # TODO: same for default grids - should check that they are the same
         self.default_grids = component.default_grids
@@ -632,16 +623,14 @@ class StreamMixtureModel(ModelBase):
         The total log-probability evaluated at the input data values.
         """
         comp_ln_probs = self.component_ln_prob_density(data)
-        return logsumexp(
-            jnp.array([ln_prob for ln_prob in comp_ln_probs.values()]), axis=0
-        )
+        return logsumexp(jnp.array(list(comp_ln_probs.values())), axis=0)
 
     def component_ln_number_density(self, data):
         return {c.name: c.ln_number_density(data) for c in self.components}
 
     def ln_number_density(self, data):
         comp_ln_n = self.component_ln_number_density(data)
-        return logsumexp(jnp.array([ln_n for ln_n in comp_ln_n.values()]), axis=0)
+        return logsumexp(jnp.array(list(comp_ln_n.values())), axis=0)
 
     def ln_likelihood(self, data):
         """
