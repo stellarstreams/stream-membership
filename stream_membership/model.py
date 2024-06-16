@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import numpyro
 from jax.scipy.special import logsumexp
+from jax_ext.integrate import ln_simpson
 
 from .plot import _plot_projections
 from .utils import del_in_nested_dict, get_from_nested_dict, set_in_nested_dict
@@ -115,6 +116,30 @@ class ModelBase:
             # Evaluate the model on the grid
             ln_ps = self.variable_ln_prob_density(tmp_data)
 
+            # If the x coord is in a joint, also compute the marginals for the x
+            # component of the joint distribution:
+            if default_x_coord in name_pair and default_x_coord not in ln_ps:
+                for joint_name_pair in ln_ps:
+                    if (
+                        isinstance(joint_name_pair, tuple)
+                        and default_x_coord in joint_name_pair
+                    ):
+                        break
+                else:
+                    msg = "x coordinate not found in valid joint distribution"
+                    raise ValueError(msg)
+
+                ln_p = ln_ps[joint_name_pair]
+                ln_p = ln_p.reshape(bin_area.shape)
+
+                # pick grid1 or grid2 based on index, but probably grid2...
+                idx = 0 if joint_name_pair[1] == default_x_coord else 1
+                ln_p = ln_simpson(ln_p, [grid2_c, grid1_c][idx], axis=idx)
+                ln_p = jnp.repeat(
+                    jnp.expand_dims(ln_p, axis=idx), grid1_c.shape[idx], axis=idx
+                ).ravel()
+                ln_ps[default_x_coord] = ln_p
+
             if name_pair in self._joint_names:
                 ln_p = ln_ps[name_pair]
 
@@ -148,6 +173,7 @@ class ModelBase:
         grids, ln_ns = self.evaluate_on_2d_grids(
             grids=grids, grid_coord_names=grid_coord_names
         )
+
         ims = {k: np.exp(v) for k, v in ln_ns.items()}
         return _plot_projections(
             grids=grids,
@@ -390,12 +416,13 @@ class StreamModel(ModelBase, abc.ABC):
             for k, v in self._data_required[comp_name].items():
                 if v in data:
                     data_kw[k] = data[v]
-                elif isinstance(v, tuple):
+                elif isinstance(v, tuple):  # assumed to be a joint distribution
                     data_kw[k] = jnp.stack(jnp.array([data[vv] for vv in v])).T
 
             comp_ln_probs[comp_name] = comp.ln_prob(
                 params=self._pars[comp_name], **data_kw
             )
+
         return comp_ln_probs
 
     def ln_prob_density(self, data):
