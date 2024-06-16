@@ -28,7 +28,8 @@ dependencies = [
     "jaxlib",
     "jax_cosmo",
     "numpyro",
-    "numpyro_ext"
+    "numpyro_ext",
+    "jax_ext @ git+https://github.com/adrn/jax-ext"
 ]
 
 [tool.hatch]
@@ -41,6 +42,9 @@ scripts.test = "pytest {args}"
 
 [tool.hatch.version.raw-options]
 local_scheme = "no-local-version"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # [tool.pytest.ini_options]
 # minversion = "6.0"
