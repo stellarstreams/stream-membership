@@ -134,11 +134,14 @@ class ModelBase:
 
                 # pick grid1 or grid2 based on index, but probably grid2...
                 idx = 0 if joint_name_pair[1] == default_x_coord else 1
-                ln_p = ln_simpson(ln_p, [grid2_c, grid1_c][idx], axis=idx)
+                grid = [grid2_c, grid1_c][idx]
+                ln_p = ln_simpson(ln_p, grid, axis=idx)
                 ln_p = jnp.repeat(
                     jnp.expand_dims(ln_p, axis=idx), grid1_c.shape[idx], axis=idx
                 ).ravel()
-                ln_ps[default_x_coord] = ln_p
+                ln_ps[default_x_coord] = ln_p - np.log(
+                    grid.max(axis=idx)[0] - grid.min(axis=idx)[0]
+                )
 
             if name_pair in self._joint_names:
                 ln_p = ln_ps[name_pair]
@@ -408,6 +411,7 @@ class StreamModel(ModelBase, abc.ABC):
         The log-probability for each component (e.g., phi2, pm1, etc) evaluated at the
         input data values.
         """
+        # TODO: should be component_ln_prob_density to be consistent?
         comp_ln_probs = {}
         for comp_name, comp in self.variables.items():
             # NOTE: this silently ignores any data that is not present, even if expected
