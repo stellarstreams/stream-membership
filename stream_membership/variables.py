@@ -29,10 +29,8 @@ class VariableBase:
                 )
 
         if cls.param_names is None:
-            raise ValueError(
-                "Subclasses of VariableBase must specify an iterable of string "
-                "parameter names as the `param_names` attribute."
-            )
+            msg = "Subclasses of VariableBase must specify an iterable of string parameter names as the `param_names` attribute."
+            raise ValueError(msg)
         cls.param_names = tuple(cls.param_names)
 
     def __init__(self, param_priors, coord_bounds=None):
@@ -44,10 +42,7 @@ class VariableBase:
             component value s (i.e. the "y" value bounds).
         """
 
-        if coord_bounds is None:
-            coord_bounds = (None, None)
-        else:
-            coord_bounds = tuple(coord_bounds)
+        coord_bounds = (None, None) if coord_bounds is None else tuple(coord_bounds)
         self.coord_bounds = coord_bounds
 
         if param_priors is None:
@@ -55,7 +50,7 @@ class VariableBase:
         self.param_priors = dict(param_priors)
 
         # to be filled below with parameter bounds
-        self._param_bounds = dict()
+        self._param_bounds = {}
 
         # check that all expected param names are specified:
         for name in self.param_names:
@@ -88,7 +83,7 @@ class VariableBase:
     @partial(jax.jit, static_argnums=(0,))
     def ln_prob(self, params, y, *args, **kwargs):
         d = self.get_dist(params, *args, **kwargs)
-        return d.log_prob(y.reshape((-1,) + d.event_shape))
+        return d.log_prob(y.reshape((-1, *d.event_shape)))
 
 
 class UniformVariable(VariableBase):

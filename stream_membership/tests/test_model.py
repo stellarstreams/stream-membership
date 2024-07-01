@@ -119,8 +119,8 @@ def test_subclass():
     chain_leaves = []
     for leaf in leaves:
         leaf = np.atleast_1d(leaf)
-        arr = jnp.reshape(leaf, (1,) + leaf.shape)
-        arr = arr + rng.normal(0, 1e-3, size=(nchains,) + leaf.shape)
+        arr = jnp.reshape(leaf, (1, *leaf.shape))
+        arr = arr + rng.normal(0, 1e-3, size=(nchains, *leaf.shape))
         chain_leaves.append(arr)
     chain_params0 = jax.tree_util.tree_unflatten(tree_def, chain_leaves)
 

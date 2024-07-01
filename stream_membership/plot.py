@@ -10,11 +10,11 @@ def _plot_projections(grids, ims, axes=None, label=True, pcolormesh_kwargs=None)
     # TODO: Check that grids.keys() and ims.keys() are the same
 
     _default_labels = {
-        "phi1": r"$\phi_1$",
-        "phi2": r"$\phi_2$",
-        "pm1": r"$\mu_{\phi_1}$",
-        "pm2": r"$\mu_{\phi_2}$",
-        "rv": r"$v_r$",
+        "phi1": r"$\phi_1$ [deg]",
+        "phi2": r"$\phi_2$ [deg]",
+        "pm1": r"$\mu_{\phi_1}$ [mas/yr]",
+        "pm2": r"$\mu_{\phi_2}$ [mas/yr]",
+        "rv": r"$v_r$ [km/s]",
     }
 
     if pcolormesh_kwargs is None:
@@ -22,7 +22,7 @@ def _plot_projections(grids, ims, axes=None, label=True, pcolormesh_kwargs=None)
 
     # Check that all x coord names are the same
     sharex = all(
-        [name_pair[0] == grid_coord_names[0][0] for name_pair in grid_coord_names]
+        name_pair[0] == grid_coord_names[0][0] for name_pair in grid_coord_names
     )
 
     if axes is None:
@@ -40,23 +40,25 @@ def _plot_projections(grids, ims, axes=None, label=True, pcolormesh_kwargs=None)
     if isinstance(axes, mpl.axes.Axes):
         axes = [axes]
     axes = np.array(axes)
+    pcms = []
 
     for i, name_pair in enumerate(grid_coord_names):
         grid1, grid2 = grids[name_pair]
-        axes[i].pcolormesh(grid1, grid2, ims[name_pair], **pcolormesh_kwargs)
+        pcm = axes[i].pcolormesh(grid1, grid2, ims[name_pair], **pcolormesh_kwargs)
+        pcms.append(pcm)
         axes[i].set_ylim(grid2.min(), grid2.max())
 
         if label:
-            axes[i].set_ylabel(_default_labels[name_pair[1]])
+            axes[i].set_ylabel(_default_labels[name_pair[1]], fontsize=16)
 
         if not sharex:
-            axes[i].set_xlabel(_default_labels[name_pair[0]])
+            axes[i].set_xlabel(_default_labels[name_pair[0]], fontsize=16)
 
     if sharex:
-        axes[-1].set_xlabel(_default_labels[name_pair[0]])
+        axes[-1].set_xlabel(_default_labels[name_pair[0]], fontsize=16)
     axes[0].set_xlim(grid1.min(), grid1.max())
 
-    return axes.flat[0].figure, axes
+    return axes.flat[0].figure, axes, pcms
 
 
 def plot_data_projections(

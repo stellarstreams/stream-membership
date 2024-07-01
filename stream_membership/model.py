@@ -7,8 +7,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import numpyro
-import numpyro.distributions as dist
 from jax.scipy.special import logsumexp
+from jax_ext.integrate import ln_simpson
 
 from .plot import _plot_projections
 from .utils import del_in_nested_dict, get_from_nested_dict, set_in_nested_dict
@@ -29,13 +29,12 @@ class ModelBase:
 
         optimize_kwargs = kwargs
         if use_bounds:
-            jaxopt_kwargs.setdefault("method", "L-BFGS-B")
             optimize_kwargs["bounds"] = cls._get_jaxopt_bounds()
             optimize_kwargs["bounds"] = (
                 cls._normalize_variable_keys(optimize_kwargs["bounds"][0]),
                 cls._normalize_variable_keys(optimize_kwargs["bounds"][1]),
             )
-            Optimizer = jaxopt.ScipyBoundedMinimize
+            Optimizer = jaxopt.LBFGSB
         else:
             jaxopt_kwargs.setdefault("method", "BFGS")
             Optimizer = jaxopt.ScipyMinimize
@@ -59,10 +58,8 @@ class ModelBase:
         for name_pair in grid_coord_names:
             for name in name_pair:
                 if name not in grids_1d and name not in self.default_grids:
-                    raise ValueError(
-                        f"No default grid for {name}, so you must specify it via the "
-                        "`grids` argument"
-                    )
+                    msg = f"No default grid for {name}, so you must specify it via the `grids` argument"
+                    raise ValueError(msg)
             grids_2d[name_pair] = np.meshgrid(
                 *[
                     grids_1d.get(name, self.default_grids.get(name))
@@ -95,7 +92,8 @@ class ModelBase:
         for name_pair in grid_coord_names:
             for name in name_pair:
                 if name not in self.coord_names:
-                    raise ValueError(f"{name} is not a valid coordinate name")
+                    msg = f"{name} is not a valid coordinate name"
+                    raise ValueError(msg)
 
         grids_2d = self._get_grids_2d(grids, grid_coord_names)
 
@@ -118,6 +116,33 @@ class ModelBase:
 
             # Evaluate the model on the grid
             ln_ps = self.variable_ln_prob_density(tmp_data)
+
+            # If the x coord is in a joint, also compute the marginals for the x
+            # component of the joint distribution:
+            if default_x_coord in name_pair and default_x_coord not in ln_ps:
+                for joint_name_pair in ln_ps:
+                    if (
+                        isinstance(joint_name_pair, tuple)
+                        and default_x_coord in joint_name_pair
+                    ):
+                        break
+                else:
+                    msg = "x coordinate not found in valid joint distribution"
+                    raise ValueError(msg)
+
+                ln_p = ln_ps[joint_name_pair]
+                ln_p = ln_p.reshape(bin_area.shape)
+
+                # pick grid1 or grid2 based on index, but probably grid2...
+                idx = 0 if joint_name_pair[1] == default_x_coord else 1
+                grid = [grid2_c, grid1_c][idx]
+                ln_p = ln_simpson(ln_p, grid, axis=idx)
+                ln_p = jnp.repeat(
+                    jnp.expand_dims(ln_p, axis=idx), grid1_c.shape[idx], axis=idx
+                ).ravel()
+                ln_ps[default_x_coord] = ln_p - np.log(
+                    grid.max(axis=idx)[0] - grid.min(axis=idx)[0]
+                )
 
             if name_pair in self._joint_names:
                 ln_p = ln_ps[name_pair]
@@ -153,6 +178,7 @@ class ModelBase:
             grids=grids, grid_coord_names=grid_coord_names
         )
         ims = {k: np.exp(v) for k, v in ln_ns.items()}
+        
         return _plot_projections(
             grids=grids,
             ims=ims,
@@ -275,17 +301,12 @@ class StreamModel(ModelBase, abc.ABC):
 
     def __init_subclass__(cls):
         if cls.name is None:
-            raise ValueError(
-                "You must set a name for this model component using the `name` class "
-                "attribute."
-            )
+            msg = "You must set a name for this model component using the `name` class attribute."
+            raise ValueError(msg)
 
         if cls.variables is None:
-            raise ValueError(
-                "You must define variables for this model by defining the dictionary "
-                "`variables` to contain keys for each coordinate to model and values "
-                "as instances of Component classes."
-            )
+            msg = "You must define variables for this model by defining the dictionary `variables` to contain keys for each coordinate to model and values as instances of Component classes."
+            raise ValueError(msg)
 
         # Now we validate the keys of .variables, and detect any joint distributions
         cls.coord_names = []
@@ -302,7 +323,8 @@ class StreamModel(ModelBase, abc.ABC):
                     cls.coord_names.append(kk)
 
             else:
-                raise ValueError(f"Invalid key type '{k}' in variables: type={type(k)}")
+                msg = f"Invalid key type '{k}' in variables: type={type(k)}"
+                raise ValueError(msg)
         cls._joint_names_inv = {v: k for k, v in cls._joint_names.items()}
         cls.coord_names = tuple(cls.coord_names)
 
@@ -323,10 +345,8 @@ class StreamModel(ModelBase, abc.ABC):
 
         for k, v in cls.data_required.items():
             if k not in cls.variables:
-                raise ValueError(
-                    f"Invalid data required key '{k}' (it doesn't exist in the "
-                    "variables dictionary)"
-                )
+                msg = f"Invalid data required key '{k}' (it doesn't exist in the variables dictionary)"
+                raise ValueError(msg)
             cls._data_required[k] = v
 
         # Do this otherwise all subclasses will share the same mutables (i.e. dictionary
@@ -340,7 +360,8 @@ class StreamModel(ModelBase, abc.ABC):
 
         # name value is required:
         if not cls.__name__.endswith("Base") and cls.name is None:
-            raise ValueError("you must specify a model component name")
+            msg = "you must specify a model component name"
+            raise ValueError(msg)
 
         if cls.default_grids is None:
             cls.default_grids = {}
@@ -391,6 +412,7 @@ class StreamModel(ModelBase, abc.ABC):
         The log-probability for each component (e.g., phi2, pm1, etc) evaluated at the
         input data values.
         """
+        # TODO: should be component_ln_prob_density to be consistent?
         comp_ln_probs = {}
         for comp_name, comp in self.variables.items():
             # NOTE: this silently ignores any data that is not present, even if expected
@@ -399,7 +421,7 @@ class StreamModel(ModelBase, abc.ABC):
             for k, v in self._data_required[comp_name].items():
                 if v in data:
                     data_kw[k] = data[v]
-                elif isinstance(v, tuple):
+                elif isinstance(v, tuple): # assumed to be a joint distribution
                     data_kw[k] = jnp.stack(jnp.array([data[vv] for vv in v])).T
 
             comp_ln_probs[comp_name] = comp.ln_prob(
@@ -412,7 +434,7 @@ class StreamModel(ModelBase, abc.ABC):
         The total log-probability evaluated at the input data values.
         """
         comp_ln_probs = self.variable_ln_prob_density(data)
-        return jnp.sum(jnp.array([v for v in comp_ln_probs.values()]), axis=0)
+        return jnp.sum(jnp.array(list(comp_ln_probs.values())), axis=0)
 
     def ln_number_density(self, data):
         return self._pars["ln_N"] + self.ln_prob_density(data)
@@ -482,7 +504,7 @@ class StreamModel(ModelBase, abc.ABC):
         packed_pars = cls._strip_model_name(packed_pars)
 
         pars = {}
-        for k in packed_pars.keys():
+        for k in packed_pars:
             if k == "ln_N":
                 pars["ln_N"] = packed_pars["ln_N"]
                 continue
@@ -579,7 +601,14 @@ class StreamModel(ModelBase, abc.ABC):
 
 
 class StreamMixtureModel(ModelBase):
-    def __init__(self, params, Components, tied_params=None):
+    components = None
+
+    def __init_subclass__(cls):
+        if cls.components is None:
+            msg = "You must set at least one component for this model using the `Component` class attribute."
+            raise ValueError(msg)
+    
+    def __init__(self, params, tied_params=None):
         if tied_params is None:
             tied_params = []
         self.tied_params = list(tied_params)
@@ -589,9 +618,10 @@ class StreamMixtureModel(ModelBase):
             # t1 could be, e.g, ("stream", "pm1") or ("stream", "pm1", "mean")
             set_in_nested_dict(params, t1, get_from_nested_dict(params, t2))
 
-        self.components = [C(params[C.name]) for C in Components]
+        self.components = [C(params[C.name]) for C in self.components]
         if len(self.components) < 1:
-            raise ValueError("You must pass at least one component")
+            msg = "You must pass at least one component"
+            raise ValueError(msg)
 
         self.coord_names = None
         for component in self.components:
@@ -606,21 +636,34 @@ class StreamMixtureModel(ModelBase):
         # TODO: same for default grids - should check that they are the same
         self.default_grids = component.default_grids
 
-    @classmethod
-    def setup_numpyro(cls, Components, data=None):
-        components = []  # instances
-        for Component in Components:
-            components.append(Component.setup_numpyro(data=None))
+        self._pars = params
 
-        obj = cls(components)
+    @classmethod
+    def setup_numpyro(cls, data=None):
+        pars = {}
+
+        for Component in cls.components:
+            comp = Component.setup_numpyro(data=None)
+            pars[Component.name] = comp._pars
+
+        
+        # components = []  # instances
+        # for Component in cls.components:
+        #     components.append(Component.setup_numpyro(data=None))
+
+        obj = cls(params=pars)
 
         if data is not None:
             # Compute the log of the effective volume integral, used in the poisson
             # process likelihood
             ln_n = obj.ln_number_density(data)
-            numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())  # TODO: not defined
-            numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
-            numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior())
+            numpyro.factor(f"mix-factor-ln_n", ln_n.sum())
+            numpyro.factor(f"mix-factor-extra_prior", obj.extra_ln_prior(params=pars))
+            for Component in cls.components:
+                comp_obj = Component(params=pars[Component.name])
+                numpyro.factor(f"{Component.name}-factor-V", -comp_obj.get_N())  # TODO: not defined
+                numpyro.factor(f"{Component.name}-factor-extra_prior", comp_obj.extra_ln_prior(params=pars[Component.name]))
+            
 
         return obj
 
@@ -632,16 +675,14 @@ class StreamMixtureModel(ModelBase):
         The total log-probability evaluated at the input data values.
         """
         comp_ln_probs = self.component_ln_prob_density(data)
-        return logsumexp(
-            jnp.array([ln_prob for ln_prob in comp_ln_probs.values()]), axis=0
-        )
+        return logsumexp(jnp.array(list(comp_ln_probs.values())), axis=0)
 
     def component_ln_number_density(self, data):
         return {c.name: c.ln_number_density(data) for c in self.components}
 
     def ln_number_density(self, data):
         comp_ln_n = self.component_ln_number_density(data)
-        return logsumexp(jnp.array([ln_n for ln_n in comp_ln_n.values()]), axis=0)
+        return logsumexp(jnp.array(list(comp_ln_n.values())), axis=0)
 
     def ln_likelihood(self, data):
         """
@@ -671,10 +712,10 @@ class StreamMixtureModel(ModelBase):
         return all_grids, terms
 
     @classmethod
-    def _get_jaxopt_bounds(cls, Components, tied_params):
+    def _get_jaxopt_bounds(cls, tied_params):
         bounds_l = {}
         bounds_h = {}
-        for C in Components:
+        for C in cls.components:
             _bounds = C._get_jaxopt_bounds()
             bounds_l[C.name] = C._normalize_variable_keys(_bounds[0])
             bounds_h[C.name] = C._normalize_variable_keys(_bounds[1])
@@ -689,14 +730,14 @@ class StreamMixtureModel(ModelBase):
         return bounds
 
     @classmethod
-    def _objective(cls, p, data, Components, tied_params=None):
+    def _objective(cls, p, data, tied_params=None):
         """
         TODO: keys of inputs have to be normalized to remove tuples
         """
-        p = {C.name: C._expand_variable_keys(p[C.name]) for C in Components}
+        p = {C.name: C._expand_variable_keys(p[C.name]) for C in cls.components}
 
-        data = Components[0]._expand_variable_keys(data)
-        model = cls(params=p, Components=Components, tied_params=tied_params)
+        data = cls.components[0]._expand_variable_keys(data)
+        model = cls(params=p, tied_params=tied_params)
         ll = model.ln_likelihood(data) + model.extra_ln_prior(p)
         N = next(iter(data.values())).shape[0]
         return -ll / N
@@ -706,7 +747,6 @@ class StreamMixtureModel(ModelBase):
         cls,
         data,
         init_params,
-        Components,
         jaxopt_kwargs=None,
         use_bounds=True,
         **kwargs,
@@ -726,7 +766,7 @@ class StreamMixtureModel(ModelBase):
         optimize_kwargs = kwargs
         if use_bounds:
             jaxopt_kwargs.setdefault("method", "L-BFGS-B")
-            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds(Components, tied_params)
+            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds(tied_params)
             Optimizer = jaxopt.ScipyBoundedMinimize
         else:
             jaxopt_kwargs.setdefault("method", "BFGS")
@@ -736,19 +776,18 @@ class StreamMixtureModel(ModelBase):
             **jaxopt_kwargs,
             fun=partial(
                 cls._objective,
-                Components=Components,
                 tied_params=tied_params,
             ),
         )
         opt_res = optimizer.run(
             init_params={
                 C.name: C._normalize_variable_keys(init_params[C.name])
-                for C in Components
+                for C in cls.components
             },
-            data=Components[0]._normalize_variable_keys(data),
+            data=cls.components[0]._normalize_variable_keys(data),
             **optimize_kwargs,
         )
         opt_p = {
-            C.name: C._expand_variable_keys(opt_res.params[C.name]) for C in Components
+            C.name: C._expand_variable_keys(opt_res.params[C.name]) for C in cls.components
         }
         return opt_p, opt_res.state

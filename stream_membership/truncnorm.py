@@ -37,13 +37,11 @@ def ppf(q, a, b):
         # TODO: should use ndtri_exp(log_Phi_x), but that's not in jax.scipy.special
         return -special.ndtri(jnp.exp(log_Phi_x))
 
-    out = jnp.empty_like(q)
-    out = jnp.select(
+    jnp.empty_like(q)
+    return jnp.select(
         [case_left, case_right],
         [ppf_left(q, a, b), ppf_right(q, a, b)],
     )
-
-    return out
 
 
 def rvs(key, a, b, loc=0.0, scale=1.0, shape=()):
