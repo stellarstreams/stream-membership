@@ -21,12 +21,6 @@ interval_vector = _IntervalVector
 
 # TODO: test against mixturesamefamily with multivariate normals
 class IsotropicGridGMM(dist.Distribution):
-    """
-    A Gaussian Mixture Model where the components are fixed to their input locations and
-    there are no covariances (but each dimension can have different scales / standard
-    deviations).
-    """
-
     arg_constraints = {  # noqa: RUF012
         "locs": constraints.real,
         "scales": constraints.positive,
@@ -45,6 +39,29 @@ class IsotropicGridGMM(dist.Distribution):
         *,
         validate_args=True,
     ):
+        """
+        A Gaussian Mixture Model where the components are fixed to their input locations
+        and there are no covariances (but each dimension can have different scales /
+        standard deviations).
+
+        Parameters
+        ----------
+        mixing_distribution
+            Distribution over the mixture components.
+        locs
+            Array of means for each component. This should have shape (D, K) where D is
+            the dimensionality of the data and K is the number of mixture components.
+        scales
+            Array of standard deviations for each component. This should have shape (D,
+            K) where D is the dimensionality of the data and K is the number of mixture
+            components.
+        low
+            Lower bounds for each dimension. This should either be a scalar or have
+            shape (D,) where D is the dimensionality of the data.
+        high
+            Upper bounds for each dimension. This should either be a scalar or have
+            shape (D,) where D is the dimensionality of the data.
+        """
         dist.mixtures._check_mixing_distribution(mixing_distribution)
         self.mixing_distribution = mixing_distribution
 
@@ -59,7 +76,7 @@ class IsotropicGridGMM(dist.Distribution):
                 f"{len(combined_shape)} dims"
             )
             raise ValueError(msg)
-        self._K, self._D = combined_shape
+        self._D, self._K = combined_shape
         batch_shape = (self._K,)
         event_shape = (self._D,)
 
@@ -75,8 +92,8 @@ class IsotropicGridGMM(dist.Distribution):
         self.low, self.high = promote_shapes(
             jnp.array(low), jnp.array(high), shape=event_shape
         )
-        self._low = jnp.broadcast_to(self.low, event_shape)
-        self._high = jnp.broadcast_to(self.high, event_shape)
+        self._low = jnp.broadcast_to(self.low, event_shape)[:, None]
+        self._high = jnp.broadcast_to(self.high, event_shape)[:, None]
 
         super().__init__(
             batch_shape=batch_shape,
@@ -100,6 +117,11 @@ class IsotropicGridGMM(dist.Distribution):
     def component_log_probs(self, value: ArrayLike) -> jax.Array:
         value = jnp.expand_dims(value, -1)
         component_log_probs = self._component_dist.log_prob(value)
+        component_log_probs = jnp.where(
+            (value >= self._low) & (value <= self._high),
+            component_log_probs,
+            -jnp.inf,
+        )
         return jax.nn.log_softmax(self.mixing_distribution.logits) + component_log_probs
 
     def log_prob(self, value: ArrayLike) -> jax.Array:

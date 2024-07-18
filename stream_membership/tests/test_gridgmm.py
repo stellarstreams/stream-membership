@@ -5,7 +5,7 @@ import numpy as np
 import numpyro.distributions as dist
 import pytest
 
-from ..truncatedgridgmm import IsotropicGridGMM
+from ..gridgmm import IsotropicGridGMM
 
 
 @pytest.mark.parametrize(
@@ -13,27 +13,27 @@ from ..truncatedgridgmm import IsotropicGridGMM
     [
         {  # Two 1D distributions, truncated low/high:
             "probs": [1.0, 0.2],
-            "locs": [[1.0], [2.0]],
-            "scales": [[0.25], [0.1]],
+            "locs": np.array([[1.0], [2.0]]).T,
+            "scales": np.array([[0.25], [0.1]]).T,
             "low": 0.5,
             "high": 2.1,
         },
         {  # Three 2D distributions, truncated low:
             "probs": [1.0, 0.5, 0.2],
-            "locs": [[1.0, 2.0], [1.5, 0.5], [0.5, 1.0]],
+            "locs": np.array([[1.0, 2.0], [1.5, 0.5], [0.5, 1.0]]).T,
             "scales": 0.2,
             "low": [0.2, 0.0],
         },
         {  # Three 2D distributions, truncated low but only one dim:
             "probs": [1.0, 0.5, 0.2],
-            "locs": [[1.0, 2.0], [1.5, 0.5], [0.5, 1.0]],
+            "locs": np.array([[1.0, 2.0], [1.5, 0.5], [0.5, 1.0]]).T,
             "scales": 0.2,
             "low": [0.2, -np.inf],
         },
         {  # Two 3D distributions, truncated high:
             "probs": [1.0, 0.2],
-            "locs": [[1.0, 2.0, 0.0], [1.5, 0.5, -1]],
-            "scales": [[1.0, 1.0, 2.0], [2, 1, 1]],
+            "locs": np.array([[1.0, 2.0, 0.0], [1.5, 0.5, -1]]).T,
+            "scales": np.array([[1.0, 1.0, 2.0], [2, 1, 1]]).T,
             "high": [2.2, 1.5, 3.5],
         },
     ],
