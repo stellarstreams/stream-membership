@@ -5,7 +5,7 @@ import numpy as np
 import numpyro.distributions as dist
 import pytest
 
-from ..truncatedgridgmm import TruncatedGridGMM
+from ..truncatedgridgmm import IsotropicGridGMM
 
 
 @pytest.mark.parametrize(
@@ -43,8 +43,8 @@ def test_gridgmm(kwargs):
     A mixture of two 1D distributions
     """
     mix = dist.Categorical(probs=jnp.array(kwargs.pop("probs")))
-    gmm = TruncatedGridGMM(mix, **kwargs)
-    gmm_notrunc = TruncatedGridGMM(
+    gmm = IsotropicGridGMM(mix, **kwargs)
+    gmm_notrunc = IsotropicGridGMM(
         mix, **{k: v for k, v in kwargs.items() if k not in ["low", "high"]}
     )
     D = gmm._D

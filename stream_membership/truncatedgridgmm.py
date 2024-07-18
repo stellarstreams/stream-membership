@@ -2,11 +2,13 @@ import jax
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from jax import lax
+from jax.scipy.special import logsumexp
+from jax.typing import ArrayLike
 from numpyro.distributions import constraints
 from numpyro.distributions.constraints import _IndependentConstraint, _Interval
 from numpyro.distributions.util import promote_shapes
 
-__all__ = ["TruncatedGridGMM"]
+__all__ = ["IsotropicGridGMM"]
 
 
 class _IntervalVector(_IndependentConstraint):
@@ -17,122 +19,93 @@ class _IntervalVector(_IndependentConstraint):
 interval_vector = _IntervalVector
 
 
-class TruncatedGridGMM(dist.mixtures.MixtureSameFamily):
+# TODO: test against mixturesamefamily with multivariate normals
+class IsotropicGridGMM(dist.Distribution):
     """
     A Gaussian Mixture Model where the components are fixed to their input locations and
     there are no covariances (but each dimension can have different scales / standard
-    deviations). The model can also be truncated to a rectangular region.
+    deviations).
     """
 
-    arg_constraints = {
+    arg_constraints = {  # noqa: RUF012
         "locs": constraints.real,
         "scales": constraints.positive,
         "low": constraints.less_than(float("inf")),
         "high": constraints.greater_than(-float("inf")),
     }
-    reparametrized_params = ["locs", "scales", "low", "high"]
+    reparametrized_params = ["locs", "scales"]  # noqa: RUF012
 
     def __init__(
         self,
-        mixing_distribution,
-        locs=0.0,
-        scales=1.0,
-        low=None,
-        high=None,
+        mixing_distribution: dist.CategoricalLogits | dist.CategoricalProbs,
+        locs: ArrayLike = 0.0,
+        scales: ArrayLike = 1.0,
+        low: ArrayLike = -jnp.inf,
+        high: ArrayLike = jnp.inf,
         *,
         validate_args=True,
     ):
         dist.mixtures._check_mixing_distribution(mixing_distribution)
+        self.mixing_distribution = mixing_distribution
 
-        if low is None:
-            low = -float("inf")
-        if high is None:
-            high = float("inf")
-
-        # N = number of data points, K = mixture components, D = dimensions
+        # K = mixture components, D = dimensions
         # - event_shape is the dimensionality of the data - number of dependent
         #   coordinates, i.e., "D" in the below
-        # - batch_shape is the number of independent dimensions. So, here, I think
-        #   should at minimum be "K", but when passing in different scales for each data
-        #   point to deconvolve, batch_shape should be (N, K). So we can assume that
-        #   the number of mixture components is batch_shape[-1].
+        # - batch_shape is the number of independent dimensions - here "K"
         combined_shape = lax.broadcast_shapes(jnp.shape(locs), jnp.shape(scales))
-        batch_shape = combined_shape[:-1]
-        event_shape = combined_shape[-1:]
-        K = batch_shape[-1]
-        D = event_shape[0]
-        self._K = K
-        self._D = D
-
-        # TODO: If we want to be strict: error if event_shape has len > 1
-
-        # TODO: check that mixing_distribution has the right shape?
+        if len(combined_shape) > 2:
+            msg = (
+                "locs and scales must have at most 2 dimensions, but got "
+                f"{len(combined_shape)} dims"
+            )
+            raise ValueError(msg)
+        self._K, self._D = combined_shape
+        batch_shape = (self._K,)
+        event_shape = (self._D,)
 
         self.locs, self.scales = promote_shapes(
             jnp.array(locs),
             jnp.array(scales),
             shape=combined_shape,
         )
-        locs = jnp.broadcast_to(self.locs, combined_shape)
-        scales = jnp.broadcast_to(self.scales, combined_shape)
+        self._locs = jnp.broadcast_to(self.locs, combined_shape)
+        self._scales = jnp.broadcast_to(self.scales, combined_shape)
 
-        # TODO: low and high should be the same shape as event_shape
+        # low and high should be the same shape as event_shape (D)
         self.low, self.high = promote_shapes(
             jnp.array(low), jnp.array(high), shape=event_shape
         )
-        low = jnp.broadcast_to(self.low, event_shape)
-        high = jnp.broadcast_to(self.high, event_shape)
-
-        # covs = jnp.zeros(batch_shape + event_shape + event_shape)
-        covs = jnp.zeros(scales.shape[:-1] + event_shape + event_shape)
-        idx = jnp.arange(D)
-        covs = covs.at[..., idx, idx].set(scales**2)
-        component_distribution = dist.MultivariateNormal(
-            locs, covariance_matrix=covs, validate_args=validate_args
-        )
+        self._low = jnp.broadcast_to(self.low, event_shape)
+        self._high = jnp.broadcast_to(self.high, event_shape)
 
         super().__init__(
-            mixing_distribution, component_distribution, validate_args=validate_args
+            batch_shape=batch_shape,
+            event_shape=event_shape,
+            validate_args=validate_args,
         )
 
         self._support = interval_vector(low, high)
 
-        # Pre-compute the amount of probability mass that is inside the censored region
-        # We need to compute this for all batch_shape elements.
-        # TODO: some residual feeling of unease about this...
-        self._log_diff_tail_probs = jnp.zeros(batch_shape)
-        for k in range(K):  # K Gaussian components
-            for d in range(D):  # D dimensions
-                norm = dist.Normal(locs[..., k, d], scales[..., k, d])
-                sign = jnp.where(locs[..., k, d] >= low[d], 1.0, -1.0)
-
-                _tail_prob_at_low = jnp.where(
-                    jnp.isfinite(low[d]),
-                    norm.cdf(locs[..., k, d] - sign * (locs[..., k, d] - low[d])),
-                    0.0,
-                )
-
-                _tail_prob_at_high = jnp.where(
-                    jnp.isfinite(high[d]),
-                    norm.cdf(locs[..., k, d] - sign * (locs[..., k, d] - high[d])),
-                    1.0,
-                )
-
-                self._log_diff_tail_probs = self._log_diff_tail_probs.at[..., k].add(
-                    jnp.log(sign * (_tail_prob_at_high - _tail_prob_at_low))
-                )
+        if jnp.all(jnp.isinf(self._low)) and jnp.all(jnp.isinf(self._high)):
+            self._component_dist = dist.Normal(loc=self._locs, scale=self._scales)
+        else:
+            self._component_dist = dist.TruncatedNormal(
+                loc=self._locs, scale=self._scales, low=self._low, high=self._high
+            )
 
     @constraints.dependent_property
-    def support(self):
+    def support(self) -> constraints.Constraint:
         return self._support
 
-    def component_log_probs(self, value):
-        value = jnp.expand_dims(value, self.mixture_dim)
-        component_log_probs = (
-            self.component_distribution.log_prob(value) - self._log_diff_tail_probs
-        )
+    def component_log_probs(self, value: ArrayLike) -> jax.Array:
+        value = jnp.expand_dims(value, -1)
+        component_log_probs = self._component_dist.log_prob(value)
         return jax.nn.log_softmax(self.mixing_distribution.logits) + component_log_probs
 
-    def sample(self, *args, **kwargs):
-        msg = "sample() is not implemented yet"
+    def log_prob(self, value: ArrayLike) -> jax.Array:
+        comp_lp = self.component_log_probs(value)
+        return logsumexp(comp_lp.sum(axis=-2), axis=-1)
+
+    def sample(self, *_, **__):
+        msg = "Sampling not implemented for IsotropicGridGMM"
         raise NotImplementedError(msg)
