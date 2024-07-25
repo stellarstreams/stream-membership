@@ -1,16 +1,183 @@
+"""
+TODO:
+- Move plotting and grid evaluation stuff to the new ModelComponent class
+- Add support for ModelComponent to be combined into a mixture. All components must
+  have the same coordinate names, unique names
+"""
+
+
 import abc
 import copy
 import inspect
 from functools import partial
+from typing import Any
 
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import numpyro
+import numpyro.distributions as dist
 from jax.scipy.special import logsumexp
+from jax.typing import ArrayLike
 from jax_ext.integrate import ln_simpson
 
 from .plot import _plot_projections
 from .utils import del_in_nested_dict, get_from_nested_dict, set_in_nested_dict
+
+
+class ModelComponent(eqx.Module):
+    name: str
+    coord_distributions: dict[str | tuple, Any]
+    coord_parameters: dict[
+        str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]
+    ]
+
+    def _make_numpyro_name(
+        self, coord_name: str | tuple[str, str], arg_name: str | None = None
+    ) -> str:
+        """
+        Convert a nested set of component name (this class name), coordinate name, and
+        parameter name into a single string for naming a parameter with
+        numpyro.sample().
+
+        Parameters
+        ----------
+        coord_name
+            The name of the coordinate in the component. If a coordinate can only be
+            modeled as a joint, pass a tuple of strings.
+        arg_name
+            The name of the parameter used in the model component for the coordinate.
+        """
+        # TODO: need to validate somewhere that coordinate names can't have "-" and
+        # component, coordinate, and parameter names can't have ":"
+        if isinstance(coord_name, tuple):
+            coord_name = "-".join(coord_name)
+
+        name = f"{self.name}:{coord_name}"
+        if arg_name is None:
+            return name
+        return f"{name}:{arg_name}"
+
+    def _expand_numpyro_name(self, numpyro_name: str) -> tuple[str, str | tuple, str]:
+        """
+        Convert a numpyro name into a tuple of component name, coordinate name, and
+        parameter name.
+
+        Parameters
+        ----------
+        numpyro_name
+            The name of the parameter in the numpyro model, i.e. the name of a parameter
+            specified with numpyro.sample(). In the context of this model, this should
+            be something like "background:phi2:loc", where the model is named
+            "background", the coordinate is named "phi2", and the parameter is named
+            "loc".
+        """
+        bits = numpyro_name.split(":")
+        return (
+            bits[0],
+            tuple(bits[1].split("-")) if "-" in bits[1] else bits[1],
+            bits[2],
+        )
+
+    def _expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+        """
+        Convert a dictionary of numpyro parameters into a nested dictionary where the keys
+        are the component name, coordinate name, and parameter name.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of numpyro parameters where the keys are the names of the
+            parameters created with numpyro.sample().
+        """
+        expanded_pars = {}
+        for k, v in pars.items():
+            name, coord_name, arg_name = self._expand_numpyro_name(k)
+            if name not in expanded_pars:
+                expanded_pars[name] = {}
+            if coord_name not in expanded_pars[name]:
+                expanded_pars[name][coord_name] = {}
+            expanded_pars[name][coord_name][arg_name] = v
+
+        return expanded_pars
+
+    def make_dists(self, pars: dict[str, Any] | None = None) -> dict[str | tuple, Any]:
+        """
+        Make a dictionary of distributions for each coordinate in the component.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameters to pass to the numpyro.sample() calls that
+            create the distributions. The dictionary should be structured as follows:
+            {
+                "coord_name": {
+                    "arg_name": value
+                }
+            }
+            where "coord_name" is the name of the coordinate and "arg_name" is the name
+            of the argument to pass to the numpyro.sample() call that creates the
+            distribution. "value" is the value to pass to the numpyro.sample() call.
+        """
+        if pars is None:
+            pars = {}
+
+        dists = {}
+        for coord_name, Distribution in self.coord_distributions.items():
+            kwargs = {}
+            for arg, val in self.coord_parameters.get(coord_name, {}).items():
+                numpyro_name = self._make_numpyro_name(coord_name, arg)
+
+                # Note: passing in a tuple as a value is a way to wrap the value in a
+                # function or outer distribution, for example for a mixture model
+                if isinstance(val, tuple):
+                    wrapper, val = val  # noqa: PLW2901
+                else:
+                    wrapper = lambda x: x  # noqa: E731
+
+                if arg in pars.get(coord_name, {}):
+                    # If an argument is passed in the pars dictionary, use that value.
+                    # This is useful, for example, for constructing the coordinate
+                    # distributions once a model is optimized or sampled, so you can
+                    # pass in parameter values to evaluate the model.
+                    par = pars[coord_name][arg]
+                elif isinstance(val, dict):
+                    par = numpyro.sample(numpyro_name, **val)
+                elif isinstance(val, dist.Distribution):
+                    par = numpyro.sample(numpyro_name, val)
+                else:
+                    par = val
+                kwargs[arg] = wrapper(par)
+
+            dists[coord_name] = Distribution(**kwargs)
+
+        return dists
+
+    def __call__(self, data: dict[str, ArrayLike]) -> None:
+        """
+        This sets up the model component in numpyro.
+        """
+        dists = self.make_dists()
+        for coord_name, dist_ in dists.items():
+            if isinstance(coord_name, tuple):
+                _data = jnp.stack([data[k] for k in coord_name], axis=-1)
+                _data_err = None  # TODO: we don't support errors for joint coordinates
+            else:
+                _data = data[coord_name]
+                _data_err = (
+                    data[f"{coord_name}_err"] if f"{coord_name}_err" in data else None
+                )
+
+            numpyro_name = self._make_numpyro_name(coord_name)
+            if _data_err is not None:
+                model_val = numpyro.sample(numpyro_name, dist_)
+                numpyro.sample(
+                    f"{numpyro_name}-obs",
+                    dist.Normal(model_val, data[f"{coord_name}_err"]),
+                    obs=_data,
+                )
+            else:
+                numpyro.sample(f"{numpyro_name}-obs", dist_, obs=_data)
 
 
 class ModelBase:
