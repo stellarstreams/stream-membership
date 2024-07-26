@@ -13,6 +13,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import matplotlib as mpl
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
@@ -266,7 +267,7 @@ class ModelComponent(eqx.Module):
         Parameters
         ----------
         pars
-            TODO: parameter values
+            A dictionary of parameter values for the model component.
         grids
             A dictionary of 1D grids for each coordinate in the model component. The
             keys should be the names of the coordinates you want to evaluate the model
@@ -279,7 +280,8 @@ class ModelComponent(eqx.Module):
             ("phi1", "pm1")].
         x_coord_name
             The name of the x coordinate to use for evaluating the model. If None, the
-            default x coordinate will be used, which is taken to be the 0th coordinate name in the specified "coord_distributions".
+            default x coordinate will be used, which is taken to be the 0th coordinate
+            name in the specified "coord_distributions".
         """
         x_coord_name = self.default_x_coord if x_coord_name is None else x_coord_name
 
@@ -295,8 +297,8 @@ class ModelComponent(eqx.Module):
 
         for name_pair in grid_coord_names:
             if name_pair[0] != x_coord_name:
-                # TODO: we could make this more general, but then some logic below needs to
-                # become more general
+                # TODO: we could make this more general, but then some logic below needs
+                # to become more general
                 msg = (
                     "We currently only support evaluating on 2D grids with the same x "
                     "coordinate axis for all grids"
@@ -324,12 +326,13 @@ class ModelComponent(eqx.Module):
         # Make the distributions for each coordinate:
         dists = self.make_dists(pars)
 
-        # First we have to check if the model component for the x coordinate is in a joint
-        # distribution with another coordinate. If it is, we need to evaluate the joint
-        # distribution on the grid and then compute the marginal distribution for x:
+        # First we have to check if the model component for the x coordinate is in a
+        # joint distribution with another coordinate. If it is, we need to evaluate the
+        # joint distribution on the grid and compute the marginal distribution for x:
         if x_coord_name not in self.coord_distributions:
-            # At this point, x_coord_name is definitely a valid coord name, but it doesn't
-            # exist as a string key in coord_distributions - it must be in a joint:
+            # At this point, x_coord_name is definitely a valid coord name, but it
+            # doesn't exist as a string key in coord_distributions - it must be in a
+            # joint:
             for x_joint_name_pair in self.coord_distributions:
                 if x_coord_name in x_joint_name_pair:
                     break
@@ -343,7 +346,8 @@ class ModelComponent(eqx.Module):
                 jnp.stack((grid1_c, grid2_c), axis=-1), **extra_data[x_joint_name_pair]
             )
 
-            # Integrates over the other coordinate to get the marginal distribution for x:
+            # Integrates over the other coordinate to get the marginal distribution for
+            # x:
             ln_p_x = ln_simpson(ln_p, grid2_c, axis=0)
             x_grid = grid1_c
 
@@ -374,8 +378,6 @@ class ModelComponent(eqx.Module):
                 )
                 evals[name_pair] = ln_p_x + ln_p_y
 
-            # ln_n = self._pars["ln_N"] + ln_p.reshape(bin_area.shape) + np.log(bin_area)
-
         return grids_2d, evals
 
     def plot_model_projections(
@@ -384,14 +386,41 @@ class ModelComponent(eqx.Module):
         grids: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
-        axes=None,
-        label=True,
-        pcolormesh_kwargs=None,
+        axes: mpl.axes.Axes | None = None,
+        label: bool = True,
+        pcolormesh_kwargs: dict | None = None,
     ):
         """
-        TODO:
-        - grids are names like phi1, phi2, etc.
-        - grid_coord_names are tuples like [(phi1, phi2), ...]
+        Plot the model evaluated on 2D grids.
+
+        Parameters
+        ----------
+        data
+            A dictionary of data arrays, where the keys are the names of the coordinates
+            in the model component.
+        pars
+            A dictionary of parameter values for the model component.
+        grids
+            A dictionary of 1D grids for each coordinate in the model component. The
+            keys should be the names of the coordinates you want to evaluate the model
+            on, and must always contain the x coordinate.
+        grid_coord_names
+            A list of tuples of coordinate names to evaluate the model on. The default
+            is to pair the x coordinate with each other coordinate in the model
+            component. For example, if the model component has coordinates "phi1",
+            "phi2", and "pm1", the default grid_coord_names would be [("phi1", "phi2"),
+            ("phi1", "pm1")].
+        x_coord_name
+            The name of the x coordinate to use for evaluating the model. If None, the
+            default x coordinate will be used, which is taken to be the 0th coordinate
+            name in the specified "coord_distributions".
+        axes
+            A matplotlib axes object to plot the residuals on. If None, a new figure and
+            axes will be created.
+        label
+            Whether to add labels to the axes.
+        pcolormesh_kwargs
+            Keyword arguments to pass to the matplotlib.pcolormesh() function.
         """
         grids, ln_ps = self.evaluate_num_on_2d_grids(
             pars=pars,
@@ -409,41 +438,74 @@ class ModelComponent(eqx.Module):
             pcolormesh_kwargs=pcolormesh_kwargs,
         )
 
-    # TODO: how to get this working, now that we're just fitting the ln-prob
     def plot_residual_projections(
         self,
-        data,
-        grids=None,
-        grid_coord_names=None,
-        axes=None,
-        label=True,
-        smooth=1.0,
-        pcolormesh_kwargs=None,
+        data: dict[str, Any],
+        pars: dict[str, Any],
+        grids: dict[str, ArrayLike],
+        grid_coord_names: list[tuple[str, str]] | None = None,
+        x_coord_name: str | None = None,
+        axes: mpl.axes.Axes | None = None,
+        label: bool = True,
+        pcolormesh_kwargs: dict | None = None,
+        smooth: int | float | None = 1.0,
     ):
         """
-        TODO:
-        - grids are names like phi1, phi2, etc.
-        - grid_coord_names are tuples like [(phi1, phi2), ...]
+        Plot the residuals of the model evaluated on 2D grids compared to the input
+        data, binned into the same 2D grids.
+
+        Parameters
+        ----------
+        data
+            A dictionary of data arrays, where the keys are the names of the coordinates
+            in the model component.
+        pars
+            A dictionary of parameter values for the model component.
+        grids
+            A dictionary of 1D grids for each coordinate in the model component. The
+            keys should be the names of the coordinates you want to evaluate the model
+            on, and must always contain the x coordinate.
+        grid_coord_names
+            A list of tuples of coordinate names to evaluate the model on. The default
+            is to pair the x coordinate with each other coordinate in the model
+            component. For example, if the model component has coordinates "phi1",
+            "phi2", and "pm1", the default grid_coord_names would be [("phi1", "phi2"),
+            ("phi1", "pm1")].
+        x_coord_name
+            The name of the x coordinate to use for evaluating the model. If None, the
+            default x coordinate will be used, which is taken to be the 0th coordinate
+            name in the specified "coord_distributions".
+        axes
+            A matplotlib axes object to plot the residuals on. If None, a new figure and
+            axes will be created.
+        label
+            Whether to add labels to the axes.
+        pcolormesh_kwargs
+            Keyword arguments to pass to the matplotlib.pcolormesh() function.
+        smooth
+            The standard deviation of the Gaussian kernel to use for smoothing the
+            residuals. If None, no smoothing is applied.
+
         """
         from scipy.ndimage import gaussian_filter
 
-        if grid_coord_names is None:
-            grid_coord_names = [
-                (self.coord_names[0], name) for name in self.coord_names[1:]
-            ]
+        grids_2d, ln_ps = self.evaluate_num_on_2d_grids(
+            pars=pars,
+            grids=grids,
+            grid_coord_names=grid_coord_names,
+            x_coord_name=x_coord_name,
+        )
+        N_data = next(data.values()).shape[0]
 
-        if grids is None:
-            grids = {}
-        coord_names = [name for name_pair in grid_coord_names for name in name_pair]
-        grids_1d = {
-            name: grids.get(name, self.default_grids.get(name)) for name in coord_names
+        # Compute the bin area for each 2D grid cell for a cheap integral...
+        bin_area = {
+            k: np.abs(np.diff(grid1[0])[None] * np.diff(grid2[:, 0])[:, None])
+            for k, (grid1, grid2) in grids_2d.items()
         }
 
-        # Evaluate the model at the grid midpoints
-        im_grids, ln_ns = self.evaluate_on_2d_grids(
-            grids=grids, grid_coord_names=grid_coord_names
-        )
-
+        ln_ns = {
+            k: ln_p + np.log(N_data) + np.log(bin_area[k]) for k, ln_p in ln_ps.items()
+        }
         model_ims = {k: np.exp(v) for k, v in ln_ns.items()}
 
         resid_ims = {}
@@ -453,7 +515,7 @@ class ModelComponent(eqx.Module):
             H_data, *_ = np.histogram2d(
                 data[name_pair[0]],
                 data[name_pair[1]],
-                bins=(grids_1d[name_pair[0]], grids_1d[name_pair[1]]),
+                bins=(grids[name_pair[0]], grids[name_pair[1]]),
             )
             data_im = H_data.T
 
@@ -472,7 +534,7 @@ class ModelComponent(eqx.Module):
         pcolormesh_kwargs.setdefault("vmax", v)
 
         return _plot_projections(
-            grids=im_grids,
+            grids=grids_2d,
             ims=resid_ims,
             axes=axes,
             label=label,
