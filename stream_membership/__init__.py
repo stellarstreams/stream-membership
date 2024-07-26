@@ -1,3 +1,3 @@
-from .model import StreamMixtureModel, StreamModel  # noqa
+# from .model import StreamMixtureModel, StreamModel
 
 VERSION = "v0.1"
