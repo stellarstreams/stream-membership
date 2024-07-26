@@ -1,6 +1,5 @@
 """
 TODO:
-- Move plotting and grid evaluation stuff to the new ModelComponent class
 - Add support for ModelComponent to be combined into a mixture. All components must
   have the same coordinate names, unique names
 """
@@ -108,10 +107,10 @@ class ModelComponent(eqx.Module):
             bits[2],
         )
 
-    def _expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
         """
-        Convert a dictionary of numpyro parameters into a nested dictionary where the keys
-        are the component name, coordinate name, and parameter name.
+        Convert a dictionary of numpyro parameters into a nested dictionary where the
+        keys are the coordinate names and parameter name.
 
         Parameters
         ----------
@@ -128,7 +127,7 @@ class ModelComponent(eqx.Module):
                 expanded_pars[name][coord_name] = {}
             expanded_pars[name][coord_name][arg_name] = v
 
-        return expanded_pars
+        return expanded_pars[name]
 
     def make_dists(self, pars: dict[str, Any] | None = None) -> dict[str | tuple, Any]:
         """

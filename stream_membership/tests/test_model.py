@@ -1,135 +1,99 @@
 import jax
 import jax.numpy as jnp
-import jaxopt
-import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from numpyro import infer
+from numpyro.infer import SVI, Predictive, Trace_ELBO
+from numpyro.infer.autoguide import AutoDelta
+from scipy.interpolate import InterpolatedUnivariateSpline
 
-from .. import ModelBase
-from ..variables import Normal1DVariable
+from ..gmm import IndependentGMM
+from ..model import ModelComponent
+from ..numpyro_dist import TruncatedNormalSpline
 
 
 def test_subclass():
     numpyro.enable_x64()
 
-    class TestModel(ModelBase):
-        name = "test"
+    phi1_lim = (-100, 20)
+    phi2_lim = (-8, 4)
+    pm1_lim = (None, -2.0)
 
-        ln_N_dist = dist.Uniform(-10, 15)
+    # Simulate data:
+    rng_key = jax.random.PRNGKey(416)
+    N = 1024
 
-        variables = {
-            "phi1": Normal1DVariable(
-                param_priors={
-                    "mean": dist.Uniform(0, 10),
-                    "ln_std": dist.Uniform(-5, 5),
-                },
-                coord_bounds=(0, 5),
-            ),
-            "phi2": Normal1DVariable(
-                param_priors={
-                    "mean": dist.Uniform(-5, 5),
-                    "ln_std": dist.Uniform(-5, 5),
-                },
-            ),
-        }
-
-    # Make fake data:
-    rng = np.random.default_rng(seed=42)
-
-    N = 10_070
-    true_pars = {
-        "ln_N": np.log(N),
-        "phi1": {
-            "mean": 2.0,
-            "ln_std": 0.423,
-        },
-        "phi2": {"mean": 0.0, "ln_std": 0.55},
-    }
-
+    keys = jax.random.split(rng_key, num=4)
     data = {
         "phi1": dist.TruncatedNormal(
-            true_pars["phi1"]["mean"],
-            np.exp(true_pars["phi1"]["ln_std"]),
-            low=0.0,
-            high=5.0,
-        ).sample(jax.random.PRNGKey(42), (N,)),
-        "phi2": rng.normal(
-            true_pars["phi2"]["mean"], np.exp(true_pars["phi2"]["ln_std"]), size=N
+            loc=-70, scale=30, low=phi1_lim[0], high=phi1_lim[1]
+        ).sample(keys[1], (N,)),
+        "phi2": dist.Uniform(*phi2_lim).sample(keys[2], (N,)),
+    }
+
+    _loc_spl = InterpolatedUnivariateSpline(
+        [-100, -20, 0.0, 20], [-5.0, -1.0, 2.0, 5.0]
+    )
+    data["pm1"] = dist.TruncatedNormal(
+        loc=_loc_spl(data["phi1"]), scale=2, high=pm1_lim[1]
+    ).sample(keys[3])
+
+    # Set up the model:
+    phi12_locs = jnp.stack(
+        jnp.meshgrid(
+            jnp.arange(phi1_lim[0] - 20, phi1_lim[1] + 20 + 1e-3, 20),
+            jnp.arange(phi2_lim[0] - 4, phi2_lim[1] + 4 + 1e-3, 4),
         ),
-    }
+        axis=-1,
+    ).reshape(-1, 2)
 
-    params0 = {
-        "ln_N": np.log(500.0),
-        "phi1": {
-            "mean": 3.0,
-            "ln_std": 0.1,
+    pm1_knots = jnp.arange(-100, 20 + 1e-3, 30)
+    bkg_model = ModelComponent(
+        name="background",
+        coord_distributions={
+            ("phi1", "phi2"): IndependentGMM,
+            "pm1": TruncatedNormalSpline,
         },
-        "phi2": {"mean": -1.0, "ln_std": 0.1},
+        coord_parameters={
+            ("phi1", "phi2"): {
+                "mixing_distribution": (
+                    dist.Categorical,
+                    dist.Dirichlet(jnp.ones(phi12_locs.shape[0])),
+                ),
+                "locs": phi12_locs.T,
+                "scales": dist.HalfNormal(2.0).expand((2, 1)),
+                "low": jnp.array([phi1_lim[0], phi2_lim[0]])[:, None],
+                "high": jnp.array([phi1_lim[1], phi2_lim[1]])[:, None],
+            },
+            "pm1": {
+                "loc_vals": dist.Uniform(-8, 20).expand([pm1_knots.shape[0]]),
+                "ln_scale_vals": dist.Uniform(-5, 5).expand([pm1_knots.shape[0]]),
+                "knots": pm1_knots,
+                "x": data["phi1"],
+                "low": pm1_lim[0],
+                "high": pm1_lim[1],
+                "spline_k": 3,
+            },
+        },
+        log_prob_extra_data={"pm1": {"x": "phi1"}},
+    )
+
+    # Try running SVI to get MAP parameters:
+    optimizer = numpyro.optim.Adam(1e-2)
+    # guide = AutoNormal(background_model)
+    guide = AutoDelta(bkg_model, init_loc_fn=numpyro.infer.init_to_sample())
+    svi = SVI(bkg_model, guide, optimizer, Trace_ELBO())
+    svi_results = svi.run(jax.random.PRNGKey(0), 2_000, data=data)
+
+    thing = Predictive(guide, params=svi_results.params, num_samples=1)
+    MAP_p = thing(rng_key, data=data)
+    MAP_p = {k: v[0] for k, v in MAP_p.items()}
+    MAP_p_unpacked = bkg_model.expand_numpyro_params(MAP_p)
+
+    grid_1ds = {
+        "phi1": jnp.linspace(*phi1_lim, 101),
+        "phi2": jnp.linspace(*phi2_lim, 102),
+        "pm1": jnp.linspace(-15.0, pm1_lim[1], 103),
     }
-    obj_val = TestModel.objective(params0, data)
-    assert np.isfinite(obj_val)
-
-    # Try optimizing without bounds:
-    optimizer = jaxopt.ScipyMinimize(
-        "bfgs",
-        fun=TestModel.objective,
-        maxiter=1_000,
+    grids, ln_probs = bkg_model.evaluate_num_on_2d_grids(
+        MAP_p_unpacked, grids=grid_1ds, x_coord_name="phi1"
     )
-    opt_res = optimizer.run(
-        init_params=params0,
-        data=data,
-    )
-    opt_pars = opt_res.params
-    assert opt_res.state.success
-
-    for k, truth in true_pars.items():
-        if isinstance(truth, dict):
-            for par_name in truth:
-                assert np.allclose(opt_pars[k][par_name], truth[par_name], atol=0.1)
-        else:
-            assert np.allclose(opt_pars[k], truth, rtol=1e-2)
-
-    # Try optimizing with bounds:
-    optimizer = jaxopt.ScipyBoundedMinimize(
-        "l-bfgs-b",
-        fun=TestModel.objective,
-        # options=dict(maxls=10000),
-        maxiter=1_000,
-    )
-    opt_res = optimizer.run(
-        init_params=params0, data=data, bounds=TestModel._get_jaxopt_bounds()
-    )
-    opt_pars = opt_res.params
-    assert opt_res.state.success
-
-    for k, truth in true_pars.items():
-        if isinstance(truth, dict):
-            for par_name in truth:
-                assert np.allclose(opt_pars[k][par_name], truth[par_name], atol=0.1)
-        else:
-            assert np.allclose(opt_pars[k], truth, rtol=1e-2)
-
-    # Now try sampling:
-    nchains = 2
-
-    rng = np.random.default_rng(seed=42)
-
-    leaves, tree_def = jax.tree_util.tree_flatten(params0)
-    chain_leaves = []
-    for leaf in leaves:
-        leaf = np.atleast_1d(leaf)
-        arr = jnp.reshape(leaf, (1, *leaf.shape))
-        arr = arr + rng.normal(0, 1e-3, size=(nchains, *leaf.shape))
-        chain_leaves.append(arr)
-    chain_params0 = jax.tree_util.tree_unflatten(tree_def, chain_leaves)
-
-    sampler = infer.MCMC(
-        infer.NUTS(TestModel.setup_numpyro),
-        num_warmup=1000,
-        num_samples=1000,
-        num_chains=nchains,
-        progress_bar=False,
-    )
-    sampler.run(jax.random.PRNGKey(0), data=data, init_params=chain_params0)
-    print(sampler.get_samples())
