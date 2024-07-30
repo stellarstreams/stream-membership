@@ -78,10 +78,13 @@ class IndependentGMM(dist.MixtureSameFamily):
         return -1
 
     def component_log_probs(self, value: ArrayLike) -> jax.Array:
+        value = jnp.array(value)
+        value = jnp.atleast_2d(value.T).T
+
         if value.shape[-1] != self._D:
             msg = (
                 "The input array must have the same number of coordinate dimensions "
-                f"as the distribution. Expected {self._D}, got {value.shape[-2]}."
+                f"as the distribution. Expected {self._D}, got {value.shape}."
             )
             raise ValueError(msg)
 
