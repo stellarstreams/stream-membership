@@ -1,10 +1,3 @@
-"""
-TODO:
-- Add support for ModelComponent to be combined into a mixture. All components must
-  have the same coordinate names, unique names
-"""
-
-
 import copy
 from functools import partial
 from typing import Any
@@ -59,6 +52,10 @@ class ModelComponent(eqx.Module):
         # at the phi1 values
         if self.log_prob_extra_data is None:
             self.log_prob_extra_data = {}
+
+    @property
+    def coord_names(self):
+        return self._coord_names
 
     def _make_numpyro_name(
         self, coord_name: str | tuple[str, str], arg_name: str | None = None
@@ -251,7 +248,7 @@ class ModelComponent(eqx.Module):
 
         return grids_2d
 
-    def evaluate_num_on_2d_grids(
+    def evaluate_on_2d_grids(
         self,
         pars: dict[str, Any],
         grids: dict[str, ArrayLike],
@@ -421,7 +418,7 @@ class ModelComponent(eqx.Module):
         pcolormesh_kwargs
             Keyword arguments to pass to the matplotlib.pcolormesh() function.
         """
-        grids, ln_ps = self.evaluate_num_on_2d_grids(
+        grids, ln_ps = self.evaluate_on_2d_grids(
             pars=pars,
             grids=grids,
             grid_coord_names=grid_coord_names,
@@ -488,7 +485,7 @@ class ModelComponent(eqx.Module):
         """
         from scipy.ndimage import gaussian_filter
 
-        grids_2d, ln_ps = self.evaluate_num_on_2d_grids(
+        grids_2d, ln_ps = self.evaluate_on_2d_grids(
             pars=pars,
             grids=grids,
             grid_coord_names=grid_coord_names,
