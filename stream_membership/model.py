@@ -1,5 +1,6 @@
+__all__ = ["ModelComponent", "ComponentMixtureModel"]
+
 import copy
-from functools import partial
 from typing import Any
 
 import equinox as eqx
@@ -9,308 +10,19 @@ import matplotlib.axes as mpl_axes
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from jax.scipy.special import logsumexp
 from jax.typing import ArrayLike
 from jax_ext.integrate import ln_simpson
 from numpyro.handlers import seed
 
 from .plot import _plot_projections
-from .utils import del_in_nested_dict, get_from_nested_dict, set_in_nested_dict
 
 
-class ModelComponent(eqx.Module):
-    name: str
-    coord_distributions: dict[str | tuple, Any]
-    coord_parameters: dict[
-        str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]
-    ]
-    default_x_coord: str | None = None
-    conditional_data: dict[str, dict[str, str]] | None = None
-    _coord_names: list[str] | None = eqx.field(init=False, default=None)
+class ModelMixin:
+    """
+    Generic functionality for model component and mixture model, like evaluating on
+    grids and plotting
+    """
 
-    def __post_init__(self):
-        # Validate that the keys (i.e. coordinate names) in coord_distributions and
-        # coord_parameters are the same
-        if set(self.coord_distributions.keys()) != set(self.coord_parameters.keys()):
-            msg = "Keys in coord_distributions and coord_parameters must match"
-            raise ValueError(msg)
-
-        if self.default_x_coord is None:
-            self.default_x_coord = next(iter(self.coord_distributions.keys()))
-            if not isinstance(self.default_x_coord, str):
-                self.default_x_coord = self.default_x_coord[0]
-
-        self._coord_names = []
-        for name in self.coord_distributions:
-            if isinstance(name, tuple):
-                self._coord_names.extend(name)
-            else:
-                self._coord_names.append(name)
-
-        # This is used to specify any extra data that is required for evaluating the
-        # log-probability of a coordinate's probability distribution. For example, a
-        # spline-enabled distribution might require the phi1 data to evaluate the spline
-        # at the phi1 values
-        if self.conditional_data is None:
-            self.conditional_data = {}
-
-        # TODO: validate that there are no circular dependencies
-        _pairs = []
-        for coord_name in self.coord_distributions:
-            for val in self.conditional_data.get(coord_name, {}).values():
-                _pairs.append((coord_name, val))
-        for _pair in _pairs:
-            if _pair[::-1] in _pairs:
-                msg = f"Circular dependency: {_pair}"
-                raise ValueError(msg)
-
-    @property
-    def coord_names(self):
-        return self._coord_names
-
-    def _make_numpyro_name(
-        self, coord_name: str | tuple[str, str], arg_name: str | None = None
-    ) -> str:
-        """
-        Convert a nested set of component name (this class name), coordinate name, and
-        parameter name into a single string for naming a parameter with
-        numpyro.sample().
-
-        Parameters
-        ----------
-        coord_name
-            The name of the coordinate in the component. If a coordinate can only be
-            modeled as a joint, pass a tuple of strings.
-        arg_name
-            The name of the parameter used in the model component for the coordinate.
-        """
-        # TODO: need to validate somewhere that coordinate names can't have "-" and
-        # component, coordinate, and parameter names can't have ":"
-        if isinstance(coord_name, tuple):
-            coord_name = "-".join(coord_name)
-
-        name = f"{self.name}:{coord_name}"
-        if arg_name is None:
-            return name
-        return f"{name}:{arg_name}"
-
-    def _expand_numpyro_name(self, numpyro_name: str) -> tuple[str, str | tuple, str]:
-        """
-        Convert a numpyro name into a tuple of component name, coordinate name, and
-        parameter name.
-
-        Parameters
-        ----------
-        numpyro_name
-            The name of the parameter in the numpyro model, i.e. the name of a parameter
-            specified with numpyro.sample(). In the context of this model, this should
-            be something like "background:phi2:loc", where the model is named
-            "background", the coordinate is named "phi2", and the parameter is named
-            "loc".
-        """
-        bits = numpyro_name.split(":")
-        return (
-            bits[0],
-            tuple(bits[1].split("-")) if "-" in bits[1] else bits[1],
-            bits[2],
-        )
-
-    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
-        """
-        Convert a dictionary of numpyro parameters into a nested dictionary where the
-        keys are the coordinate names and parameter name.
-
-        Parameters
-        ----------
-        pars
-            A dictionary of numpyro parameters where the keys are the names of the
-            parameters created with numpyro.sample().
-        """
-        expanded_pars = {}
-        for k, v in pars.items():
-            name, coord_name, arg_name = self._expand_numpyro_name(k)
-            if name not in expanded_pars:
-                expanded_pars[name] = {}
-            if coord_name not in expanded_pars[name]:
-                expanded_pars[name][coord_name] = {}
-            expanded_pars[name][coord_name][arg_name] = v
-
-        return expanded_pars[name]
-
-    def make_dists(self, pars: dict[str, Any] | None = None) -> dict[str | tuple, Any]:
-        """
-        Make a dictionary of distributions for each coordinate in the component.
-
-        Parameters
-        ----------
-        pars
-            A dictionary of parameters to pass to the numpyro.sample() calls that
-            create the distributions. The dictionary should be structured as follows:
-            {
-                "coord_name": {
-                    "arg_name": value
-                }
-            }
-            where "coord_name" is the name of the coordinate and "arg_name" is the name
-            of the argument to pass to the numpyro.sample() call that creates the
-            distribution. "value" is the value to pass to the numpyro.sample() call.
-        """
-        if pars is None:
-            pars = {}
-
-        dists = {}
-        for coord_name, Distribution in self.coord_distributions.items():
-            kwargs = {}
-            for arg, val in self.coord_parameters.get(coord_name, {}).items():
-                numpyro_name = self._make_numpyro_name(coord_name, arg)
-
-                # Note: passing in a tuple as a value is a way to wrap the value in a
-                # function or outer distribution, for example for a mixture model
-                if isinstance(val, tuple):
-                    wrapper, val = val  # noqa: PLW2901
-                else:
-                    wrapper = lambda x: x  # noqa: E731
-
-                if arg in pars.get(coord_name, {}):
-                    # If an argument is passed in the pars dictionary, use that value.
-                    # This is useful, for example, for constructing the coordinate
-                    # distributions once a model is optimized or sampled, so you can
-                    # pass in parameter values to evaluate the model.
-                    par = pars[coord_name][arg]
-                elif isinstance(val, dict):
-                    par = numpyro.sample(numpyro_name, **val)
-                elif isinstance(val, dist.Distribution):
-                    par = numpyro.sample(numpyro_name, val)
-                else:
-                    par = val
-                kwargs[arg] = wrapper(par)
-
-            dists[coord_name] = Distribution(**kwargs)
-
-        return dists
-
-    def _make_conditional_data(self, data: dict[str, ArrayLike]) -> dict[str, dict]:
-        conditional_data = {}
-        for coord_name in self.coord_distributions:
-            data_map = self.conditional_data.get(coord_name, {})
-
-            conditional_data[coord_name] = {}
-            for key, val in data_map.items():
-                # NOTE: behavior - if key is missing from data, we pass None
-                conditional_data[coord_name][key] = data.get(val, None)
-
-        return conditional_data
-
-    def _sample_order(self) -> list[str | tuple[str, str]]:
-        sample_order = []
-
-        conditional_data = {
-            k: list(set(v.values())) for k, v in self.conditional_data.items()
-        }
-
-        # First, any coord or coord pair not in conditional_data can be done first:
-        for coord_name in self.coord_distributions:
-            if coord_name not in self.conditional_data:
-                sample_order.append(coord_name)
-                conditional_data.pop(coord_name, None)
-
-        for _ in range(128):  # NOTE: max 128 iterations
-            for coord_name, dependencies in conditional_data.items():
-                if all(dep in sample_order for dep in dependencies):
-                    sample_order.append(coord_name)
-                    conditional_data.pop(coord_name)
-                    break
-
-            if len(conditional_data) == 0:
-                break
-
-        else:  # TODO: would be better to detect the circular dependency at init
-            msg = "Circular dependency likely in conditional_data"
-            raise ValueError(msg)
-
-        return sample_order
-
-    def __call__(self, data: dict[str, ArrayLike]) -> None:
-        """
-        This sets up the model component in numpyro.
-        """
-        dists = self.make_dists()
-        for coord_name, dist_ in dists.items():
-            if isinstance(coord_name, tuple):
-                _data = jnp.stack([data[k] for k in coord_name], axis=-1)
-                _data_err = None  # TODO: we don't support errors for joint coordinates
-            else:
-                _data = data[coord_name]
-                _data_err = (
-                    data[f"{coord_name}_err"] if f"{coord_name}_err" in data else None
-                )
-
-            numpyro_name = self._make_numpyro_name(coord_name)
-            if _data_err is not None:
-                model_val = numpyro.sample(numpyro_name, dist_)
-                numpyro.sample(
-                    f"{numpyro_name}-obs",
-                    dist.Normal(model_val, data[f"{coord_name}_err"]),
-                    obs=_data,
-                )
-            else:
-                numpyro.sample(f"{numpyro_name}-obs", dist_, obs=_data)
-
-            # TODO: what to do if user wants to model number density?
-            # Compute the log of the effective volume integral, used in the poisson
-            # process likelihood
-            # ln_n = obj.ln_number_density(data)
-            # numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())
-            # numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
-            # numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior(pars))
-
-    def sample(
-        self, key: Any, sample_shape: Any = (), pars: dict[str, Any] | None = None
-    ) -> dict[str, jax.Array]:
-        """
-        Sample from the model component. If no parameters `pars` are passed, this will
-        sample from the prior. All of the coordinate distributions must be sample-able
-        in order for this to work.
-
-        Parameters
-        ----------
-        key
-            A JAX random key.
-        sample_shape (optional)
-            The shape of the samples to draw.
-        pars (optional)
-            A dictionary of parameters for the model component.
-        """
-        if pars is None:
-            dists = seed(self.make_dists, key)()
-        else:
-            dists = self.make_dists(pars=pars)
-
-        keys = jax.random.split(key, len(self.coord_distributions))
-
-        samples = {}
-        for coord_name, key in zip(self._sample_order(), keys, strict=True):
-            extra_data = self._make_conditional_data(samples)
-            shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
-            samples[coord_name] = dists[coord_name].sample(
-                key, shape, **extra_data[coord_name]
-            )
-
-        return {k: samples[k] for k in self.coord_distributions}
-
-    ###################################################################################
-    # Methods that can be overridden in subclasses:
-    #
-    def extra_ln_prior(self, pars: dict[str, Any]):
-        """
-        A log-prior to add to the total log-probability. This is useful for adding
-        custom priors or regularizations that are not part of the model components.
-        """
-        return 0.0
-
-    ###################################################################################
-    # Evaluating on grids and plotting
-    #
     def _get_grids_2d(
         self,
         grids_1d: list | tuple | ArrayLike,
@@ -623,175 +335,385 @@ class ModelComponent(eqx.Module):
         )
 
 
-class MixtureModel(eqx.Module):
-    def __init__(self, params, Components, tied_params=None):
-        if tied_params is None:
-            tied_params = []
-        self.tied_params = list(tied_params)
+class ModelComponent(eqx.Module, ModelMixin):
+    name: str
+    coord_distributions: dict[str | tuple, Any]
+    coord_parameters: dict[
+        str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]
+    ]
+    default_x_coord: str | None = None
+    conditional_data: dict[str, dict[str, str]] | None = None
+    _coord_names: list[str] | None = eqx.field(init=False, default=None)
 
-        params = copy.deepcopy(params)
-        for t1, t2 in self.tied_params:
-            # t1 could be, e.g, ("stream", "pm1") or ("stream", "pm1", "mean")
-            set_in_nested_dict(params, t1, get_from_nested_dict(params, t2))
-
-        self.components = [C(params[C.name]) for C in Components]
-        if len(self.components) < 1:
-            msg = "You must pass at least one component"
+    def __post_init__(self):
+        # Validate that the keys (i.e. coordinate names) in coord_distributions and
+        # coord_parameters are the same
+        if set(self.coord_distributions.keys()) != set(self.coord_parameters.keys()):
+            msg = "Keys in coord_distributions and coord_parameters must match"
             raise ValueError(msg)
 
-        self.coord_names = None
-        for component in self.components:
-            if self.coord_names is None:
-                self.coord_names = tuple(component.coord_names)
+        if self.default_x_coord is None:
+            self.default_x_coord = next(iter(self.coord_distributions.keys()))
+            if not isinstance(self.default_x_coord, str):
+                self.default_x_coord = self.default_x_coord[0]
+
+        self._coord_names = []
+        for name in self.coord_distributions:
+            if isinstance(name, tuple):
+                self._coord_names.extend(name)
             else:
-                if self.coord_names != tuple(component.coord_names):
-                    msg = "All components must have the same set of coordinate names"
-                    raise ValueError(msg)
+                self._coord_names.append(name)
 
-        # TODO: same for default grids - should check that they are the same
-        self.default_grids = component.default_grids
+        # This is used to specify any extra data that is required for evaluating the
+        # log-probability of a coordinate's probability distribution. For example, a
+        # spline-enabled distribution might require the phi1 data to evaluate the spline
+        # at the phi1 values
+        if self.conditional_data is None:
+            self.conditional_data = {}
 
-    @classmethod
-    def setup_numpyro(cls, Components, data=None):
-        components = []  # instances
-        for Component in Components:
-            components.append(Component.setup_numpyro(data=None))
+        # TODO: validate that there are no circular dependencies
+        _pairs = []
+        for coord_name in self.coord_distributions:
+            for val in self.conditional_data.get(coord_name, {}).values():
+                _pairs.append((coord_name, val))
+        for _pair in _pairs:
+            if _pair[::-1] in _pairs:
+                msg = f"Circular dependency: {_pair}"
+                raise ValueError(msg)
 
-        obj = cls(components)
+    @property
+    def coord_names(self):
+        return self._coord_names
 
-        if data is not None:
-            # Compute the log of the effective volume integral, used in the poisson
-            # process likelihood
-            ln_n = obj.ln_number_density(data)
-            numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())  # TODO: not defined
-            numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
-            numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior())
-
-        return obj
-
-    def component_ln_prob_density(self, data):
-        return {c.name: c.ln_prob_density(data) for c in self.components}
-
-    def ln_prob_density(self, data):
+    def _make_numpyro_name(
+        self, coord_name: str | tuple[str, str], arg_name: str | None = None
+    ) -> str:
         """
-        The total log-probability evaluated at the input data values.
+        Convert a nested set of component name (this class name), coordinate name, and
+        parameter name into a single string for naming a parameter with
+        numpyro.sample().
+
+        Parameters
+        ----------
+        coord_name
+            The name of the coordinate in the component. If a coordinate can only be
+            modeled as a joint, pass a tuple of strings.
+        arg_name
+            The name of the parameter used in the model component for the coordinate.
         """
-        comp_ln_probs = self.component_ln_prob_density(data)
-        return logsumexp(jnp.array(list(comp_ln_probs.values())), axis=0)
+        # TODO: need to validate somewhere that coordinate names can't have "-" and
+        # component, coordinate, and parameter names can't have ":"
+        if isinstance(coord_name, tuple):
+            coord_name = "-".join(coord_name)
 
-    def component_ln_number_density(self, data):
-        return {c.name: c.ln_number_density(data) for c in self.components}
+        name = f"{self.name}:{coord_name}"
+        if arg_name is None:
+            return name
+        return f"{name}:{arg_name}"
 
-    def ln_number_density(self, data):
-        comp_ln_n = self.component_ln_number_density(data)
-        return logsumexp(jnp.array(list(comp_ln_n.values())), axis=0)
-
-    def ln_likelihood(self, data):
+    def _expand_numpyro_name(self, numpyro_name: str) -> tuple[str, str | tuple, str]:
         """
-        NOTE: This is the Poisson process likelihood
-        """
-        # TODO: logsumexp instead?
-        N = jnp.sum(jnp.array([c.get_N() for c in self.components]))
-        return -N + self.ln_number_density(data).sum()
+        Convert a numpyro name into a tuple of component name, coordinate name, and
+        parameter name.
 
-    def extra_ln_prior(self, params):
-        return jnp.sum(
-            jnp.array([c.extra_ln_prior(params[c.name]) for c in self.components])
+        Parameters
+        ----------
+        numpyro_name
+            The name of the parameter in the numpyro model, i.e. the name of a parameter
+            specified with numpyro.sample(). In the context of this model, this should
+            be something like "background:phi2:loc", where the model is named
+            "background", the coordinate is named "phi2", and the parameter is named
+            "loc".
+        """
+        bits = numpyro_name.split(":")
+        return (
+            bits[0],
+            tuple(bits[1].split("-")) if "-" in bits[1] else bits[1],
+            bits[2],
         )
 
-    def evaluate_on_2d_grids(self, grids=None, grid_coord_names=None):
+    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+        """
+        Convert a dictionary of numpyro parameters into a nested dictionary where the
+        keys are the coordinate names and parameter name.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of numpyro parameters where the keys are the names of the
+            parameters created with numpyro.sample().
+        """
+        expanded_pars = {}
+        for k, v in pars.items():
+            name, coord_name, arg_name = self._expand_numpyro_name(k)
+            if name not in expanded_pars:
+                expanded_pars[name] = {}
+            if coord_name not in expanded_pars[name]:
+                expanded_pars[name][coord_name] = {}
+            expanded_pars[name][coord_name][arg_name] = v
+
+        return expanded_pars[name]
+
+    def make_dists(self, pars: dict[str, Any] | None = None) -> dict[str | tuple, Any]:
+        """
+        Make a dictionary of distributions for each coordinate in the component.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameters to pass to the numpyro.sample() calls that
+            create the distributions. The dictionary should be structured as follows:
+            {
+                "coord_name": {
+                    "arg_name": value
+                }
+            }
+            where "coord_name" is the name of the coordinate and "arg_name" is the name
+            of the argument to pass to the numpyro.sample() call that creates the
+            distribution. "value" is the value to pass to the numpyro.sample() call.
+        """
+        if pars is None:
+            pars = {}
+
+        dists = {}
+        for coord_name, Distribution in self.coord_distributions.items():
+            kwargs = {}
+            for arg, val in self.coord_parameters.get(coord_name, {}).items():
+                numpyro_name = self._make_numpyro_name(coord_name, arg)
+
+                # Note: passing in a tuple as a value is a way to wrap the value in a
+                # function or outer distribution, for example for a mixture model
+                if isinstance(val, tuple):
+                    wrapper, val = val  # noqa: PLW2901
+                else:
+                    wrapper = lambda x: x  # noqa: E731
+
+                if arg in pars.get(coord_name, {}):
+                    # If an argument is passed in the pars dictionary, use that value.
+                    # This is useful, for example, for constructing the coordinate
+                    # distributions once a model is optimized or sampled, so you can
+                    # pass in parameter values to evaluate the model.
+                    par = pars[coord_name][arg]
+                elif isinstance(val, dict):
+                    par = numpyro.sample(numpyro_name, **val)
+                elif isinstance(val, dist.Distribution):
+                    par = numpyro.sample(numpyro_name, val)
+                else:
+                    par = val
+                kwargs[arg] = wrapper(par)
+
+            dists[coord_name] = Distribution(**kwargs)
+
+        return dists
+
+    def _make_conditional_data(self, data: dict[str, ArrayLike]) -> dict[str, dict]:
+        conditional_data = {}
+        for coord_name in self.coord_distributions:
+            data_map = self.conditional_data.get(coord_name, {})
+
+            conditional_data[coord_name] = {}
+            for key, val in data_map.items():
+                # NOTE: behavior - if key is missing from data, we pass None
+                conditional_data[coord_name][key] = data.get(val, None)
+
+        return conditional_data
+
+    def _sample_order(self) -> list[str | tuple[str, str]]:
+        sample_order = []
+
+        conditional_data = {
+            k: list(set(v.values())) for k, v in self.conditional_data.items()
+        }
+
+        # First, any coord or coord pair not in conditional_data can be done first:
+        for coord_name in self.coord_distributions:
+            if coord_name not in self.conditional_data:
+                sample_order.append(coord_name)
+                conditional_data.pop(coord_name, None)
+
+        for _ in range(128):  # NOTE: max 128 iterations
+            for coord_name, dependencies in conditional_data.items():
+                if all(dep in sample_order for dep in dependencies):
+                    sample_order.append(coord_name)
+                    conditional_data.pop(coord_name)
+                    break
+
+            if len(conditional_data) == 0:
+                break
+
+        else:  # TODO: would be better to detect the circular dependency at init
+            msg = "Circular dependency likely in conditional_data"
+            raise ValueError(msg)
+
+        return sample_order
+
+    def __call__(self, data: dict[str, ArrayLike]) -> None:
+        """
+        This sets up the model component in numpyro.
+        """
+        dists = self.make_dists()
+        for coord_name, dist_ in dists.items():
+            if isinstance(coord_name, tuple):
+                _data = jnp.stack([data[k] for k in coord_name], axis=-1)
+                _data_err = None  # TODO: we don't support errors for joint coordinates
+            else:
+                _data = data[coord_name]
+                _data_err = (
+                    data[f"{coord_name}_err"] if f"{coord_name}_err" in data else None
+                )
+
+            numpyro_name = self._make_numpyro_name(coord_name)
+            if _data_err is not None:
+                model_val = numpyro.sample(numpyro_name, dist_)
+                numpyro.sample(
+                    f"{numpyro_name}-obs",
+                    dist.Normal(model_val, data[f"{coord_name}_err"]),
+                    obs=_data,
+                )
+            else:
+                numpyro.sample(f"{numpyro_name}-obs", dist_, obs=_data)
+
+            # TODO: what to do if user wants to model number density?
+            # Compute the log of the effective volume integral, used in the poisson
+            # process likelihood
+            # ln_n = obj.ln_number_density(data)
+            # numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())
+            # numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
+            # numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior(pars))
+
+    def sample(
+        self, key: Any, sample_shape: Any = (), pars: dict[str, Any] | None = None
+    ) -> dict[str, jax.Array]:
+        """
+        Sample from the model component. If no parameters `pars` are passed, this will
+        sample from the prior. All of the coordinate distributions must be sample-able
+        in order for this to work.
+
+        Parameters
+        ----------
+        key
+            A JAX random key.
+        sample_shape (optional)
+            The shape of the samples to draw.
+        pars (optional)
+            A dictionary of parameters for the model component.
+        """
+        if pars is None:
+            dists = seed(self.make_dists, key)()
+        else:
+            dists = self.make_dists(pars=pars)
+
+        keys = jax.random.split(key, len(self.coord_distributions))
+
+        samples = {}
+        for coord_name, key in zip(self._sample_order(), keys, strict=True):
+            extra_data = self._make_conditional_data(samples)
+            shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
+            samples[coord_name] = dists[coord_name].sample(
+                key, shape, **extra_data[coord_name]
+            )
+
+        return {k: samples[k] for k in self.coord_distributions}
+
+    ###################################################################################
+    # Methods that can be overridden in subclasses:
+    #
+    def extra_ln_prior(self, pars: dict[str, Any]):
+        """
+        A log-prior to add to the total log-probability. This is useful for adding
+        custom priors or regularizations that are not part of the model components.
+        """
+        return 0.0
+
+
+class ComponentMixtureModel(eqx.Module, ModelMixin):
+    mixing_probs: dist.Dirichlet | ArrayLike
+    components: list[ModelComponent]
+
+    def __post_init__(self):
+        # TODO: validate All components must have the same coordinate names, unique
+        # names, and so on. Also that the mixing distribution has the right shape
+        # relative to the number of components
+
+        mix_shape = (
+            self.mixing_probs.event_shape[0]
+            if isinstance(self.mixing_probs, dist.Dirichlet)
+            else self.mixing_probs.shape[0]
+        )
+
+        if mix_shape != len(self.components):
+            msg = (
+                "The mixing distribution must have the same number of components as "
+                "the model."
+            )
+            raise ValueError(msg)
+
+    def __call__(self, data: dict[str, ArrayLike]) -> None:
+        """
+        This sets up the mixture model in numpyro.
+        """
+        from .numpyro_dist import _StackedModelComponent
+
+        probs = numpyro.sample("mixture-probs", self.mixing_probs)
+        _combined_components = [
+            _StackedModelComponent(component) for component in self.components
+        ]
+        mixture = dist.MixtureGeneral(dist.Categorical(probs), _combined_components)
+
+        # TODO: how to handle uncertainties?
+        stacked_data = np.stack(list(data.values()), axis=-1)
+        numpyro.sample("mixture", mixture, obs=stacked_data)
+
+    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+        """
+        Convert a dictionary of numpyro parameters into a nested dictionary where the
+        keys are the coordinate names and parameter name.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of numpyro parameters where the keys are the names of the
+            parameters created with numpyro.sample().
+        """
+        pars = copy.deepcopy(pars)
+        expanded_pars = {}
+        for component in self.components:
+            component_pars = {}
+            for key in list(pars.keys()):  # convert to list because we change dict keys
+                if key.startswith(f"{component.name}:"):
+                    component_pars[key] = pars.pop(key)
+            expanded_pars[component.name] = component.expand_numpyro_params(
+                component_pars
+            )
+
+        expanded_pars.update(pars)
+        return expanded_pars
+
+    def evaluate_on_2d_grids(
+        self,
+        pars: dict[str, Any],
+        grids: dict[str, ArrayLike],
+        grid_coord_names: list[tuple[str, str]] | None = None,
+        x_coord_name: str | None = None,
+    ):
+        expanded_pars = self.expand_numpyro_params(pars)
+
         terms = {}
         for component in self.components:
             all_grids, component_terms = component.evaluate_on_2d_grids(
-                grids=grids, grid_coord_names=grid_coord_names
+                pars=expanded_pars[component.name],
+                grids=grids,
+                grid_coord_names=grid_coord_names,
+                x_coord_name=x_coord_name,
             )
             for k, v in component_terms.items():
                 if k not in terms:
                     terms[k] = []
                 terms[k].append(v)
 
-        terms = {k: logsumexp(jnp.array(v), axis=0) for k, v in terms.items()}
-        return all_grids, terms
-
-    @classmethod
-    def _get_jaxopt_bounds(cls, Components, tied_params):
-        bounds_l = {}
-        bounds_h = {}
-        for C in Components:
-            _bounds = C._get_jaxopt_bounds()
-            bounds_l[C.name] = C._normalize_variable_keys(_bounds[0])
-            bounds_h[C.name] = C._normalize_variable_keys(_bounds[1])
-
-        bounds = (bounds_l, bounds_h)
-
-        if tied_params is not None:
-            for b in bounds:
-                for t1, _ in tied_params:
-                    del_in_nested_dict(b, t1)
-
-        return bounds
-
-    @classmethod
-    def _objective(cls, p, data, Components, tied_params=None):
-        """
-        TODO: keys of inputs have to be normalized to remove tuples
-        """
-        p = {C.name: C._expand_variable_keys(p[C.name]) for C in Components}
-
-        data = Components[0]._expand_variable_keys(data)
-        model = cls(params=p, Components=Components, tied_params=tied_params)
-        ll = model.ln_likelihood(data) + model.extra_ln_prior(p)
-        N = next(iter(data.values())).shape[0]
-        return -ll / N
-
-    @classmethod
-    def optimize(
-        cls,
-        data,
-        init_params,
-        Components,
-        jaxopt_kwargs=None,
-        use_bounds=True,
-        **kwargs,
-    ):
-        """
-        A wrapper around numpyro_ext.optim utilities, which enable jaxopt optimization
-        for numpyro models.
-        """
-        import jaxopt
-
-        if jaxopt_kwargs is None:
-            jaxopt_kwargs = {}
-        jaxopt_kwargs.setdefault("maxiter", 8192)  # TODO: TOTALLY ARBITRARY
-
-        tied_params = kwargs.pop("tied_params", None)
-
-        optimize_kwargs = kwargs
-        if use_bounds:
-            jaxopt_kwargs.setdefault("method", "L-BFGS-B")
-            optimize_kwargs["bounds"] = cls._get_jaxopt_bounds(Components, tied_params)
-            Optimizer = jaxopt.ScipyBoundedMinimize
-        else:
-            jaxopt_kwargs.setdefault("method", "BFGS")
-            Optimizer = jaxopt.ScipyMinimize
-
-        optimizer = Optimizer(
-            **jaxopt_kwargs,
-            fun=partial(
-                cls._objective,
-                Components=Components,
-                tied_params=tied_params,
-            ),
-        )
-        opt_res = optimizer.run(
-            init_params={
-                C.name: C._normalize_variable_keys(init_params[C.name])
-                for C in Components
-            },
-            data=Components[0]._normalize_variable_keys(data),
-            **optimize_kwargs,
-        )
-        opt_p = {
-            C.name: C._expand_variable_keys(opt_res.params[C.name]) for C in Components
+        # TODO: need to use "mixture-probs" in here as global weights
+        terms = {
+            k: jax.scipy.special.logsumexp(jnp.array(v), axis=0)
+            for k, v in terms.items()
         }
-        return opt_p, opt_res.state
+        return all_grids, terms
