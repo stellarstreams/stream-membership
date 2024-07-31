@@ -148,6 +148,18 @@ def test_conditional_data():
             conditional_data={"pm1": {"x": "phi1"}, "phi1": {"x": "pm1"}},
         )
 
+    samples = model.sample(jax.random.PRNGKey(0))
+    assert "phi1" in samples
+    assert samples["phi1"].shape == ()
+    assert "pm1" in samples
+    assert samples["pm1"].shape == ()
+
+    samples = model.sample(jax.random.PRNGKey(0), sample_shape=(10,))
+    assert "phi1" in samples
+    assert samples["phi1"].shape == (10,)
+    assert "pm1" in samples
+    assert samples["pm1"].shape == (10,)
+
 
 cond_data_cases = [
     {
@@ -173,7 +185,9 @@ cond_data_expects = [
 ]
 
 
-@pytest.mark.parametrize("cond_data, expect", zip(cond_data_cases, cond_data_expects))
+@pytest.mark.parametrize(
+    ("cond_data", "expect"), zip(cond_data_cases, cond_data_expects)
+)
 def test_sample_order(cond_data, expect):
     model = ModelComponent(
         name="test",

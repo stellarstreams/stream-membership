@@ -12,6 +12,7 @@ import numpyro.distributions as dist
 from jax.scipy.special import logsumexp
 from jax.typing import ArrayLike
 from jax_ext.integrate import ln_simpson
+from numpyro.handlers import seed
 
 from .plot import _plot_projections
 from .utils import del_in_nested_dict, get_from_nested_dict, set_in_nested_dict
@@ -195,7 +196,8 @@ class ModelComponent(eqx.Module):
 
             conditional_data[coord_name] = {}
             for key, val in data_map.items():
-                conditional_data[coord_name][key] = data[val]
+                # NOTE: behavior - if key is missing from data, we pass None
+                conditional_data[coord_name][key] = data.get(val, None)
 
         return conditional_data
 
@@ -279,16 +281,20 @@ class ModelComponent(eqx.Module):
         pars (optional)
             A dictionary of parameters for the model component.
         """
-        dists = self.make_dists(pars=pars)
-
-        # TODO: determine sampling order from self.conditional_data
-        self.conditional_data
+        if pars is None:
+            dists = seed(self.make_dists, key)()
+        else:
+            dists = self.make_dists(pars=pars)
 
         samples = {}
-        for coord_name, dist_ in dists.items():
-            samples[coord_name] = dist_.sample(key, sample_shape)
+        for coord_name in self._sample_order():
+            extra_data = self._make_conditional_data(samples)
+            shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
+            samples[coord_name] = dists[coord_name].sample(
+                key, shape, **extra_data[coord_name]
+            )
 
-        return samples
+        return {k: samples[k] for k in self.coord_distributions}
 
     ###################################################################################
     # Methods that can be overridden in subclasses:
