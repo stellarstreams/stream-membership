@@ -286,8 +286,10 @@ class ModelComponent(eqx.Module):
         else:
             dists = self.make_dists(pars=pars)
 
+        keys = jax.random.split(key, len(self.coord_distributions))
+
         samples = {}
-        for coord_name in self._sample_order():
+        for coord_name, key in zip(self._sample_order(), keys, strict=True):
             extra_data = self._make_conditional_data(samples)
             shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
             samples[coord_name] = dists[coord_name].sample(
