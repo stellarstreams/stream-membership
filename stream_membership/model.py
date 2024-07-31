@@ -188,6 +188,46 @@ class ModelComponent(eqx.Module):
 
         return dists
 
+    def _make_conditional_data(self, data: dict[str, ArrayLike]) -> dict[str, dict]:
+        conditional_data = {}
+        for coord_name in self.coord_distributions:
+            data_map = self.conditional_data.get(coord_name, {})
+
+            conditional_data[coord_name] = {}
+            for key, val in data_map.items():
+                conditional_data[coord_name][key] = data[val]
+
+        return conditional_data
+
+    def _sample_order(self) -> list[str | tuple[str, str]]:
+        sample_order = []
+
+        conditional_data = {
+            k: list(set(v.values())) for k, v in self.conditional_data.items()
+        }
+
+        # First, any coord or coord pair not in conditional_data can be done first:
+        for coord_name in self.coord_distributions:
+            if coord_name not in self.conditional_data:
+                sample_order.append(coord_name)
+                conditional_data.pop(coord_name, None)
+
+        for _ in range(128):  # NOTE: max 128 iterations
+            for coord_name, dependencies in conditional_data.items():
+                if all(dep in sample_order for dep in dependencies):
+                    sample_order.append(coord_name)
+                    conditional_data.pop(coord_name)
+                    break
+
+            if len(conditional_data) == 0:
+                break
+
+        else:  # TODO: would be better to detect the circular dependency at init
+            msg = "Circular dependency likely in conditional_data"
+            raise ValueError(msg)
+
+        return sample_order
+
     def __call__(self, data: dict[str, ArrayLike]) -> None:
         """
         This sets up the model component in numpyro.
@@ -221,6 +261,34 @@ class ModelComponent(eqx.Module):
             # numpyro.factor(f"{cls.name}-factor-V", -obj.get_N())
             # numpyro.factor(f"{cls.name}-factor-ln_n", ln_n.sum())
             # numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior(pars))
+
+    def sample(
+        self, key: Any, sample_shape: Any = (), pars: dict[str, Any] | None = None
+    ) -> dict[str, jax.Array]:
+        """
+        Sample from the model component. If no parameters `pars` are passed, this will
+        sample from the prior. All of the coordinate distributions must be sample-able
+        in order for this to work.
+
+        Parameters
+        ----------
+        key
+            A JAX random key.
+        sample_shape (optional)
+            The shape of the samples to draw.
+        pars (optional)
+            A dictionary of parameters for the model component.
+        """
+        dists = self.make_dists(pars=pars)
+
+        # TODO: determine sampling order from self.conditional_data
+        self.conditional_data
+
+        samples = {}
+        for coord_name, dist_ in dists.items():
+            samples[coord_name] = dist_.sample(key, sample_shape)
+
+        return samples
 
     ###################################################################################
     # Methods that can be overridden in subclasses:
@@ -257,17 +325,6 @@ class ModelComponent(eqx.Module):
             grids_2d[name_pair] = jnp.meshgrid(*[grids_1d[name] for name in name_pair])
 
         return grids_2d
-
-    def _make_extra_data(self, data: dict[str, ArrayLike]) -> dict[str, dict]:
-        extra_data = {}
-        for coord_name in self.coord_distributions:
-            data_map = self.conditional_data.get(coord_name, {})
-
-            extra_data[coord_name] = {}
-            for key, val in data_map.items():
-                extra_data[coord_name][key] = data[val]
-
-        return extra_data
 
     def evaluate_on_2d_grids(
         self,
@@ -333,7 +390,7 @@ class ModelComponent(eqx.Module):
 
         # Extra data to pass to log_prob() for each coordinate:
         grid_cs = {k: 0.5 * (grids[k][:-1] + grids[k][1:]) for k in grids}
-        extra_data = self._make_extra_data(grid_cs)
+        conditional_data = self._make_conditional_data(grid_cs)
 
         # Make the distributions for each coordinate:
         dists = self.make_dists(pars)
@@ -355,7 +412,8 @@ class ModelComponent(eqx.Module):
             grid2_c = 0.5 * (grid2[:-1, :-1] + grid2[1:, 1:])
 
             ln_p = dists[x_joint_name_pair].log_prob(
-                jnp.stack((grid1_c, grid2_c), axis=-1), **extra_data[x_joint_name_pair]
+                jnp.stack((grid1_c, grid2_c), axis=-1),
+                **conditional_data[x_joint_name_pair],
             )
 
             # Integrates over the other coordinate to get the marginal distribution for
@@ -367,7 +425,9 @@ class ModelComponent(eqx.Module):
             # Otherwise, we can just evaluate the model on the x coordinate grid:
             grid = grids[x_coord_name]
             x_grid = 0.5 * (grid[:-1] + grid[1:])
-            ln_p_x = dists[x_coord_name].log_prob(x_grid, **extra_data[x_coord_name])
+            ln_p_x = dists[x_coord_name].log_prob(
+                x_grid, **conditional_data[x_coord_name]
+            )
 
         evals = {}
         for name_pair in grid_coord_names:
@@ -381,12 +441,13 @@ class ModelComponent(eqx.Module):
             if name_pair in self.coord_distributions:
                 # It's a joint distribution:
                 evals[name_pair] = dists[name_pair].log_prob(
-                    jnp.stack((grid1_c, grid2_c), axis=-1), **extra_data[name_pair]
+                    jnp.stack((grid1_c, grid2_c), axis=-1),
+                    **conditional_data[name_pair],
                 )
             else:
                 # It's an independent distribution from the x_coord_name:
                 ln_p_y = dists[name_pair[1]].log_prob(
-                    grid2_c, **extra_data[name_pair[1]]
+                    grid2_c, **conditional_data[name_pair[1]]
                 )
                 evals[name_pair] = ln_p_x + ln_p_y
 

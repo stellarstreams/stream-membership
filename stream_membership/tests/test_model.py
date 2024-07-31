@@ -147,3 +147,54 @@ def test_conditional_data():
             },
             conditional_data={"pm1": {"x": "phi1"}, "phi1": {"x": "pm1"}},
         )
+
+
+cond_data_cases = [
+    {
+        "phi2": {"x": "phi1"},
+        "pm1": {"x": "phi1", "y": "phi2"},
+        "pm2": {"x": "pm1"},
+    },
+    {
+        "phi2": {"x": "phi1", "y": "pm2"},
+        "pm1": {"x": "phi1", "z": "phi1"},
+        "pm2": {"x": "pm1"},
+    },
+    {
+        "phi2": {"x": "phi1", "y": "pm2"},
+        "pm1": {"x": "phi1", "y": "phi2", "z": "phi1"},
+        "pm2": {"x": "pm1"},
+    },
+]
+cond_data_expects = [
+    ["yo", "phi1", "phi2", "pm1", "pm2"],
+    ["yo", "phi1", "pm1", "pm2", "phi2"],
+    None,  # error
+]
+
+
+@pytest.mark.parametrize("cond_data, expect", zip(cond_data_cases, cond_data_expects))
+def test_sample_order(cond_data, expect):
+    model = ModelComponent(
+        name="test",
+        coord_distributions={
+            "yo": dist.Delta,
+            "phi1": dist.Delta,
+            "phi2": dist.Delta,
+            "pm1": dist.Delta,
+            "pm2": dist.Delta,
+        },
+        coord_parameters={
+            "yo": {"v": 0.0},
+            "phi1": {"v": 0.0},
+            "phi2": {"v": 0.0},
+            "pm1": {"v": 0.0},
+            "pm2": {"v": 0.0},
+        },
+        conditional_data=cond_data,
+    )
+    if expect is not None:
+        assert tuple(model._sample_order()) == tuple(expect)
+    else:
+        with pytest.raises(ValueError, match="Circular dependency"):
+            model._sample_order()
