@@ -5,7 +5,7 @@ from typing import Any
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib as mpl
+import matplotlib.axes as mpl_axes
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
@@ -24,7 +24,7 @@ class ModelComponent(eqx.Module):
         str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]
     ]
     default_x_coord: str | None = None
-    log_prob_extra_data: dict[str, dict[str, str]] | None = None
+    conditional_data: dict[str, dict[str, str]] | None = None
     _coord_names: list[str] | None = eqx.field(init=False, default=None)
 
     def __post_init__(self):
@@ -50,8 +50,18 @@ class ModelComponent(eqx.Module):
         # log-probability of a coordinate's probability distribution. For example, a
         # spline-enabled distribution might require the phi1 data to evaluate the spline
         # at the phi1 values
-        if self.log_prob_extra_data is None:
-            self.log_prob_extra_data = {}
+        if self.conditional_data is None:
+            self.conditional_data = {}
+
+        # TODO: validate that there are no circular dependencies
+        _pairs = []
+        for coord_name in self.coord_distributions:
+            for val in self.conditional_data.get(coord_name, {}).values():
+                _pairs.append((coord_name, val))
+        for _pair in _pairs:
+            if _pair[::-1] in _pairs:
+                msg = f"Circular dependency: {_pair}"
+                raise ValueError(msg)
 
     @property
     def coord_names(self):
@@ -248,6 +258,17 @@ class ModelComponent(eqx.Module):
 
         return grids_2d
 
+    def _make_extra_data(self, data: dict[str, ArrayLike]) -> dict[str, dict]:
+        extra_data = {}
+        for coord_name in self.coord_distributions:
+            data_map = self.conditional_data.get(coord_name, {})
+
+            extra_data[coord_name] = {}
+            for key, val in data_map.items():
+                extra_data[coord_name][key] = data[val]
+
+        return extra_data
+
     def evaluate_on_2d_grids(
         self,
         pars: dict[str, Any],
@@ -311,13 +332,8 @@ class ModelComponent(eqx.Module):
         grids_2d = self._get_grids_2d(grids, grid_coord_names)
 
         # Extra data to pass to log_prob() for each coordinate:
-        extra_data = {}
-        for coord_name in self.coord_distributions:
-            data_map = self.log_prob_extra_data.get(coord_name, {})
-
-            extra_data[coord_name] = {}
-            for key, val in data_map.items():
-                extra_data[coord_name][key] = 0.5 * (grids[val][:-1] + grids[val][1:])
+        grid_cs = {k: 0.5 * (grids[k][:-1] + grids[k][1:]) for k in grids}
+        extra_data = self._make_extra_data(grid_cs)
 
         # Make the distributions for each coordinate:
         dists = self.make_dists(pars)
@@ -382,7 +398,7 @@ class ModelComponent(eqx.Module):
         grids: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
-        axes: mpl.axes.Axes | None = None,
+        axes: mpl_axes.Axes | None = None,
         label: bool = True,
         pcolormesh_kwargs: dict | None = None,
     ):
@@ -441,7 +457,7 @@ class ModelComponent(eqx.Module):
         grids: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
-        axes: mpl.axes.Axes | None = None,
+        axes: mpl_axes.Axes | None = None,
         label: bool = True,
         pcolormesh_kwargs: dict | None = None,
         smooth: int | float | None = 1.0,

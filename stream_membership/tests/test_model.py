@@ -2,13 +2,14 @@ import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+import pytest
 from numpyro.infer import SVI, Predictive, Trace_ELBO
 from numpyro.infer.autoguide import AutoDelta
 from scipy.interpolate import InterpolatedUnivariateSpline
 
 from ..gmm import IndependentGMM
 from ..model import ModelComponent
-from ..numpyro_dist import TruncatedNormalSpline
+from ..numpyro_dist import NormalSpline, TruncatedNormalSpline
 
 
 def test_subclass():
@@ -74,7 +75,7 @@ def test_subclass():
                 "spline_k": 3,
             },
         },
-        log_prob_extra_data={"pm1": {"x": "phi1"}},
+        conditional_data={"pm1": {"x": "phi1"}},
     )
 
     # Try running SVI to get MAP parameters:
@@ -97,3 +98,52 @@ def test_subclass():
     grids, ln_probs = bkg_model.evaluate_num_on_2d_grids(
         MAP_p_unpacked, grids=grid_1ds, x_coord_name="phi1"
     )
+
+
+def test_conditional_data():
+    knots = jnp.linspace(0, 10, 10)
+    x = jnp.linspace(0, 10, 100)
+    model = ModelComponent(
+        name="test",
+        coord_distributions={
+            "phi1": dist.Normal,
+            "pm1": NormalSpline,
+        },
+        coord_parameters={
+            "phi1": {
+                "loc": 0.0,
+                "scale": 1.0,
+            },
+            "pm1": {
+                "loc_vals": dist.Uniform(-8, 20).expand([len(knots)]),
+                "ln_scale_vals": dist.Uniform(-5, 5).expand([len(knots)]),
+                "knots": knots,
+                "x": x,
+                "spline_k": 3,
+            },
+        },
+        conditional_data={"pm1": {"x": "phi1"}},
+    )
+
+    with pytest.raises(ValueError, match="Circular dependency"):
+        ModelComponent(
+            name="test",
+            coord_distributions={
+                "phi1": dist.Normal,
+                "pm1": NormalSpline,
+            },
+            coord_parameters={
+                "phi1": {
+                    "loc": 0.0,
+                    "scale": 1.0,
+                },
+                "pm1": {
+                    "loc_vals": dist.Uniform(-8, 20).expand([len(knots)]),
+                    "ln_scale_vals": dist.Uniform(-5, 5).expand([len(knots)]),
+                    "knots": knots,
+                    "x": x,
+                    "spline_k": 3,
+                },
+            },
+            conditional_data={"pm1": {"x": "phi1"}, "phi1": {"x": "pm1"}},
+        )
