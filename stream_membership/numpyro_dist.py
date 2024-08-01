@@ -315,4 +315,6 @@ class _StackedModelComponent(dist.Distribution):
 
     def sample(self, key: jax.random.PRNGKey, sample_shape: tuple = ()) -> jax.Array:
         samples = self.model_component.sample(key, sample_shape)
-        return jnp.stack([jnp.atleast_2d(s.T).T for s in samples.values()], axis=-1)
+        return jnp.concatenate(
+            [jnp.atleast_2d(s.T).T for s in samples.values()], axis=-1
+        )
