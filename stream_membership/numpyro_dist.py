@@ -58,19 +58,25 @@ class NormalSpline(dist.Distribution):
         self.loc_vals = jnp.array(loc_vals)
         self.ln_scale_vals = jnp.array(ln_scale_vals)
 
-        self._loc_spl = InterpolatedUnivariateSpline(
-            self.knots,
-            self.loc_vals,
-            k=self.spline_k["loc"],
-            endpoints="not-a-knot",  # TODO: make this customizable?
-        )
+        if self.loc_vals.ndim == 0:
+            self._loc_spl = lambda _: self.loc_vals
+        else:
+            self._loc_spl = InterpolatedUnivariateSpline(
+                self.knots,
+                self.loc_vals,
+                k=self.spline_k["loc"],
+                endpoints="not-a-knot",  # TODO: make this customizable?
+            )
 
-        self._ln_scale_spl = InterpolatedUnivariateSpline(
-            self.knots,
-            self.ln_scale_vals,
-            k=self.spline_k["ln_scale"],
-            endpoints="not-a-knot",  # TODO: make this customizable?
-        )
+        if self.ln_scale_vals.ndim == 0:
+            self._ln_scale_spl = lambda _: self.ln_scale_vals
+        else:
+            self._ln_scale_spl = InterpolatedUnivariateSpline(
+                self.knots,
+                self.ln_scale_vals,
+                k=self.spline_k["ln_scale"],
+                endpoints="not-a-knot",  # TODO: make this customizable?
+            )
 
     def _make_helper_dist(self, x: ArrayLike | None = None) -> dist.Normal:
         x = self.x if x is None else x

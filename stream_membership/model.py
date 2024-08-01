@@ -288,7 +288,7 @@ class ModelMixin:
             grid_coord_names=grid_coord_names,
             x_coord_name=x_coord_name,
         )
-        N_data = next(data.values()).shape[0]
+        N_data = next(iter(data.values())).shape[0]
 
         # Compute the bin area for each 2D grid cell for a cheap integral...
         bin_area = {
@@ -711,9 +711,11 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                     terms[k] = []
                 terms[k].append(v)
 
-        # TODO: need to use "mixture-probs" in here as global weights
+        # use "mixture-probs" to weight the component terms
         terms = {
-            k: jax.scipy.special.logsumexp(jnp.array(v), axis=0)
+            k: jax.scipy.special.logsumexp(
+                jnp.array(v).T, axis=-1, b=pars["mixture-probs"]
+            ).T
             for k, v in terms.items()
         }
         return all_grids, terms
