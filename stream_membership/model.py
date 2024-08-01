@@ -631,9 +631,24 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
     components: list[ModelComponent]
 
     def __post_init__(self):
-        # TODO: validate All components must have the same coordinate names, unique
-        # names, and so on. Also that the mixing distribution has the right shape
-        # relative to the number of components
+        # Some validation of the input bits:
+        coord_names = None
+        for component in self.components:
+            if not isinstance(component, ModelComponent):
+                msg = "All components must be instances of ModelComponent"
+                raise ValueError(msg)
+
+            if coord_names is None:
+                coord_names = tuple(component.coord_names)
+            elif tuple(component.coord_names) != coord_names:
+                msg = "All components must have the same coordinate names"
+                raise ValueError(msg)
+
+        if len({component.name for component in self.components}) != len(
+            self.components
+        ):
+            msg = "All components must have unique names"
+            raise ValueError(msg)
 
         mix_shape = (
             self.mixing_probs.event_shape[0]
