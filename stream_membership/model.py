@@ -1,6 +1,7 @@
 __all__ = ["ModelComponent", "ComponentMixtureModel"]
 
 import copy
+from itertools import chain
 from typing import Any
 
 import equinox as eqx
@@ -532,8 +533,11 @@ class ModelComponent(eqx.Module, ModelMixin):
                 conditional_data.pop(coord_name, None)
 
         for _ in range(128):  # NOTE: max 128 iterations
+            flat_sample_order = list(
+                chain(*[(s,) if isinstance(s, str) else s for s in sample_order])
+            )
             for coord_name, dependencies in conditional_data.items():
-                if all(dep in sample_order for dep in dependencies):
+                if all(dep in flat_sample_order for dep in dependencies):
                     sample_order.append(coord_name)
                     conditional_data.pop(coord_name)
                     break
@@ -547,10 +551,15 @@ class ModelComponent(eqx.Module, ModelMixin):
 
         return sample_order
 
-    def __call__(self, data: dict[str, ArrayLike]) -> None:
+    def __call__(
+        self, data: dict[str, ArrayLike], err: dict[str, ArrayLike] | None = None
+    ) -> None:
         """
         This sets up the model component in numpyro.
         """
+        if err is None:
+            err = {}
+
         dists = self.make_dists()
         for coord_name, dist_ in dists.items():
             if isinstance(coord_name, tuple):
@@ -558,9 +567,7 @@ class ModelComponent(eqx.Module, ModelMixin):
                 _data_err = None  # TODO: we don't support errors for joint coordinates
             else:
                 _data = data[coord_name]
-                _data_err = (
-                    data[f"{coord_name}_err"] if f"{coord_name}_err" in data else None
-                )
+                _data_err = err.get(coord_name, None)
 
             numpyro_name = self._make_numpyro_name(coord_name)
             if _data_err is not None:
@@ -629,6 +636,7 @@ class ModelComponent(eqx.Module, ModelMixin):
 class ComponentMixtureModel(eqx.Module, ModelMixin):
     mixing_probs: dist.Dirichlet | ArrayLike
     components: list[ModelComponent]
+    coord_names: tuple[str] = eqx.field(init=False)
 
     def __post_init__(self):
         # Some validation of the input bits:
@@ -643,6 +651,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             elif tuple(component.coord_names) != coord_names:
                 msg = "All components must have the same coordinate names"
                 raise ValueError(msg)
+        self.coord_names = coord_names
 
         if len({component.name for component in self.components}) != len(
             self.components
@@ -663,7 +672,9 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             )
             raise ValueError(msg)
 
-    def __call__(self, data: dict[str, ArrayLike]) -> None:
+    def __call__(
+        self, data: dict[str, ArrayLike], err: dict[str, ArrayLike] | None = None
+    ) -> None:
         """
         This sets up the mixture model in numpyro.
         """
@@ -675,9 +686,27 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         ]
         mixture = dist.MixtureGeneral(dist.Categorical(probs), _combined_components)
 
-        # TODO: how to handle uncertainties?
-        stacked_data = np.stack(list(data.values()), axis=-1)
-        numpyro.sample("mixture", mixture, obs=stacked_data)
+        stacked_data = np.stack([data[k] for k in self.coord_names], axis=-1)
+        if err is None:
+            numpyro.sample("mixture", mixture, obs=stacked_data)
+        else:
+            model_data = numpyro.sample(
+                "mixture", mixture, sample_shape=(stacked_data.shape[0],)
+            )
+            i = 0
+            for name in self.coord_names:
+                # TODO: assumes that joints can only have at most 2 coordinates. This is
+                # probably also implicitly assumed elsewhere, so need to enforce this at
+                # some validation time
+                size = 2 if isinstance(name, tuple) else 1
+                slc = slice(i, i + size)
+                model_data_dist = (
+                    dist.Normal(model_data[:, slc], err[name])
+                    if name in err
+                    else dist.Delta(model_data[:, slc])
+                )
+                numpyro.sample(f"{name}-obs", model_data_dist, obs=stacked_data[:, slc])
+                i += size
 
     def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
         """
