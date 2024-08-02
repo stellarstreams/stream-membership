@@ -68,7 +68,7 @@ allow-direct-references = true
 
 # NOTE: disable mypy type checks
 [tool.mypy]
-exclude =  ["stream_membership"]
+# exclude =  ["stream_membership"]
 
 [tool.ruff]
 
