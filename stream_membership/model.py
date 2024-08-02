@@ -17,6 +17,8 @@ from numpyro.handlers import seed
 
 from .plot import _plot_projections
 
+CoordinateName = str | tuple[str, str]
+
 
 class ModelMixin:
     """
@@ -343,8 +345,9 @@ class ModelComponent(eqx.Module, ModelMixin):
         str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]
     ]
     default_x_coord: str | None = None
-    conditional_data: dict[str, dict[str, str]] | None = None
-    _coord_names: list[str] | None = eqx.field(init=False, default=None)
+    conditional_data: dict[CoordinateName, dict[str, str]] = eqx.field(default=None)
+    _coord_names: list[str] = eqx.field(init=False)
+    _sample_order: list[CoordinateName] = eqx.field(init=False)
 
     def __post_init__(self):
         # Validate that the keys (i.e. coordinate names) in coord_distributions and
@@ -372,7 +375,7 @@ class ModelComponent(eqx.Module, ModelMixin):
         if self.conditional_data is None:
             self.conditional_data = {}
 
-        # TODO: validate that there are no circular dependencies
+        # Validate that there are no circular dependencies:
         _pairs = []
         for coord_name in self.coord_distributions:
             for val in self.conditional_data.get(coord_name, {}).values():
@@ -381,13 +384,14 @@ class ModelComponent(eqx.Module, ModelMixin):
             if _pair[::-1] in _pairs:
                 msg = f"Circular dependency: {_pair}"
                 raise ValueError(msg)
+        self._sample_order = self._make_sample_order()
 
     @property
     def coord_names(self):
         return self._coord_names
 
     def _make_numpyro_name(
-        self, coord_name: str | tuple[str, str], arg_name: str | None = None
+        self, coord_name: CoordinateName, arg_name: str | None = None
     ) -> str:
         """
         Convert a nested set of component name (this class name), coordinate name, and
@@ -444,7 +448,7 @@ class ModelComponent(eqx.Module, ModelMixin):
             A dictionary of numpyro parameters where the keys are the names of the
             parameters created with numpyro.sample().
         """
-        expanded_pars = {}
+        expanded_pars: dict[str, dict] = {}
         for k, v in pars.items():
             name, coord_name, arg_name = self._expand_numpyro_name(k)
             if name not in expanded_pars:
@@ -507,8 +511,10 @@ class ModelComponent(eqx.Module, ModelMixin):
 
         return dists
 
-    def _make_conditional_data(self, data: dict[str, ArrayLike]) -> dict[str, dict]:
-        conditional_data = {}
+    def _make_conditional_data(
+        self, data: dict[str, ArrayLike]
+    ) -> dict[CoordinateName, dict]:
+        conditional_data: dict[CoordinateName, dict] = {}
         for coord_name in self.coord_distributions:
             data_map = self.conditional_data.get(coord_name, {})
 
@@ -519,7 +525,7 @@ class ModelComponent(eqx.Module, ModelMixin):
 
         return conditional_data
 
-    def _sample_order(self) -> list[str | tuple[str, str]]:
+    def _make_sample_order(self) -> list[CoordinateName]:
         sample_order = []
 
         conditional_data = {
@@ -545,7 +551,7 @@ class ModelComponent(eqx.Module, ModelMixin):
             if len(conditional_data) == 0:
                 break
 
-        else:  # TODO: would be better to detect the circular dependency at init
+        else:
             msg = "Circular dependency likely in conditional_data"
             raise ValueError(msg)
 
@@ -566,7 +572,7 @@ class ModelComponent(eqx.Module, ModelMixin):
                 _data = jnp.stack([data[k] for k in coord_name], axis=-1)
                 _data_err = None  # TODO: we don't support errors for joint coordinates
             else:
-                _data = data[coord_name]
+                _data = jnp.asarray(data[coord_name])
                 _data_err = err.get(coord_name, None)
 
             numpyro_name = self._make_numpyro_name(coord_name)

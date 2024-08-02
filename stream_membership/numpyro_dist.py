@@ -12,7 +12,7 @@ import numpyro.distributions as dist
 from jax.typing import ArrayLike
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
 
-from .model import ModelComponent
+from .model import CoordinateName, ModelComponent
 
 
 class NormalSpline(dist.Distribution):
@@ -83,7 +83,10 @@ class NormalSpline(dist.Distribution):
         return dist.Normal(loc=self._loc_spl(x), scale=jnp.exp(self._ln_scale_spl(x)))
 
     def sample(
-        self, key: Any, sample_shape: Any = (), x: ArrayLike | None = None
+        self,
+        key: jax._src.random.KeyArray,
+        sample_shape: Any = (),
+        x: ArrayLike | None = None,
     ) -> jax.Array | Any:
         """
         Draws samples from the distribution.
@@ -234,7 +237,10 @@ class DirichletSpline(dist.Dirichlet):
         return jnp.where(conc > 0, conc, jnp.finfo(fl).tiny).T
 
     def sample(
-        self, key: Any, sample_shape: Any = (), x: ArrayLike | None = None
+        self,
+        key: jax._src.random.KeyArray,
+        sample_shape: Any = (),
+        x: ArrayLike | None = None,
     ) -> jax.Array | Any:
         """
         Draws samples from the distribution.
