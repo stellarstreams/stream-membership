@@ -459,7 +459,11 @@ class ModelComponent(eqx.Module, ModelMixin):
 
         return expanded_pars[name]
 
-    def make_dists(self, pars: dict[str, Any] | None = None) -> dict[str | tuple, Any]:
+    def make_dists(
+        self,
+        pars: dict[CoordinateName, Any] | None = None,
+        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+    ) -> dict[str | tuple, Any]:
         """
         Make a dictionary of distributions for each coordinate in the component.
 
@@ -477,12 +481,17 @@ class ModelComponent(eqx.Module, ModelMixin):
             of the argument to pass to the numpyro.sample() call that creates the
             distribution. "value" is the value to pass to the numpyro.sample() call.
         """
-        if pars is None:
-            pars = {}
+        pars = pars if pars is not None else {}
+        overrides = overrides if overrides is not None else {}
 
         dists = {}
         for coord_name, Distribution in self.coord_distributions.items():
             kwargs = {}
+
+            if coord_name in overrides:
+                dists[coord_name] = overrides[coord_name]
+                continue
+
             for arg, val in self.coord_parameters.get(coord_name, {}).items():
                 numpyro_name = self._make_numpyro_name(coord_name, arg)
 
@@ -595,7 +604,11 @@ class ModelComponent(eqx.Module, ModelMixin):
             # numpyro.factor(f"{cls.name}-factor-extra_prior", obj.extra_ln_prior(pars))
 
     def sample(
-        self, key: Any, sample_shape: Any = (), pars: dict[str, Any] | None = None
+        self,
+        key: jax._src.random.KeyArray,
+        sample_shape: Any = (),
+        pars: dict[CoordinateName, Any] | None = None,
+        overrides: dict[CoordinateName, dist.Distribution] | None = None,
     ) -> dict[str, jax.Array]:
         """
         Sample from the model component. If no parameters `pars` are passed, this will
@@ -612,14 +625,14 @@ class ModelComponent(eqx.Module, ModelMixin):
             A dictionary of parameters for the model component.
         """
         if pars is None:
-            dists = seed(self.make_dists, key)()
+            dists = seed(self.make_dists, key)(overrides=overrides)
         else:
-            dists = self.make_dists(pars=pars)
+            dists = self.make_dists(pars=pars, overrides=overrides)
 
         keys = jax.random.split(key, len(self.coord_distributions))
 
-        samples = {}
-        for coord_name, key in zip(self._sample_order(), keys, strict=True):
+        samples: dict[CoordinateName, jax.Array] = {}
+        for coord_name, key in zip(self._sample_order, keys, strict=True):
             extra_data = self._make_conditional_data(samples)
             shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
             samples[coord_name] = dists[coord_name].sample(
@@ -642,7 +655,11 @@ class ModelComponent(eqx.Module, ModelMixin):
 class ComponentMixtureModel(eqx.Module, ModelMixin):
     mixing_probs: dist.Dirichlet | ArrayLike
     components: list[ModelComponent]
+    tied_coordinates: dict[str, dict[str, str]] | None = None
+
     coord_names: tuple[str] = eqx.field(init=False)
+    _tied_order: list[str] = eqx.field(init=False)
+    _components: dict[str, ModelComponent] = eqx.field(init=False)
 
     def __post_init__(self):
         # Some validation of the input bits:
@@ -664,6 +681,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         ):
             msg = "All components must have unique names"
             raise ValueError(msg)
+        self._components = {component.name: component for component in self.components}
 
         mix_shape = (
             self.mixing_probs.event_shape[0]
@@ -678,6 +696,66 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             )
             raise ValueError(msg)
 
+        # Validate tied coordinates:
+        self.tied_coordinates = (
+            self.tied_coordinates if self.tied_coordinates is not None else {}
+        )
+        # TODO: out of laziness, we only support non-joint coordinates in tied
+        # coordinates for now...
+        for coord_name in self.tied_coordinates:
+            if not isinstance(coord_name, str):
+                msg = "Only non-joint coordinates are supported in tied coordinates"
+                raise NotImplementedError(msg)
+
+        # Check for circular dependencies and set up order of components to create dists
+        # for:
+        self._tied_order = self._make_tied_order(self.tied_coordinates)
+
+    @property
+    def component_names(self) -> tuple[str, ...]:
+        return tuple(self._components.keys())
+
+    def _make_tied_order(
+        self, tied_coordinates: dict[str, dict[str, str]]
+    ) -> list[str]:
+        """
+        Parameters
+        ----------
+        tied_coordinates
+            A dictionary of tied coordinates, where a key should be the name of a model
+            component in the mixture, and the value should be a dictionary with keys as
+            the names of the coordinates in the model component and values as the names
+            of the other model component to tie that coordinate to. For example,
+            tied_coordinates={"offtrack": {"pm1": "stream}} means that for the model
+            component named "offtrack", use the "pm1" coordinate from the "stream" model
+            component.
+        """
+        tied_coordinates = copy.deepcopy(tied_coordinates)
+        dependencies = {k: list(set(v.values())) for k, v in tied_coordinates.items()}
+
+        tied_order = []
+
+        # First, any component with no dependencies can be done first:
+        for name in self.component_names:
+            if name not in dependencies:
+                tied_order.append(name)
+
+        for _ in range(128):  # NOTE: max 128 iterations, arbitrary
+            for name in tied_coordinates:
+                if all(dep in tied_order for dep in dependencies[name]):
+                    tied_order.append(name)
+                    tied_coordinates.pop(name, None)
+                    break
+
+            if len(tied_coordinates) == 0:
+                break
+
+        else:
+            msg = "Circular dependency likely in tied_coordinates"
+            raise ValueError(msg)
+
+        return tied_order
+
     def __call__(
         self, data: dict[str, ArrayLike], err: dict[str, ArrayLike] | None = None
     ) -> None:
@@ -687,10 +765,28 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         from .numpyro_dist import _StackedModelComponent
 
         probs = numpyro.sample("mixture-probs", self.mixing_probs)
-        _combined_components = [
-            _StackedModelComponent(component) for component in self.components
-        ]
-        mixture = dist.MixtureGeneral(dist.Categorical(probs), _combined_components)
+
+        # Deal with tied coordinates here across components:
+        _combined_components: dict[str, _StackedModelComponent] = {}
+        for component_name in self._tied_order:
+            tied_map = self.tied_coordinates.get(component_name, {})
+
+            overrides = {
+                override_coord: _combined_components[dep]._model_component_dists[
+                    override_coord
+                ]
+                for override_coord, dep in tied_map.items()
+            }
+            _combined_components[component_name] = _StackedModelComponent(
+                self._components[component_name], overrides=overrides
+            )
+
+        # Here we make sure the order we pass in the components respects the original
+        # order the user passed in, for interpretation of the probabilities:
+        mixture = dist.MixtureGeneral(
+            dist.Categorical(probs),
+            [_combined_components[name] for name in self.component_names],
+        )
 
         stacked_data = np.stack([data[k] for k in self.coord_names], axis=-1)
         if err is None:
