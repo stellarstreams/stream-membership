@@ -1,8 +1,4 @@
-__all__ = [
-    "NormalSpline",
-    "TruncatedNormalSpline",
-    "DirichletSpline",
-]
+__all__ = ["DirichletSpline"]
 
 from typing import Any
 
