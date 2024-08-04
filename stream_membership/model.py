@@ -49,133 +49,6 @@ class ModelMixin:
 
         return grids_2d
 
-    def evaluate_on_2d_grids(
-        self,
-        pars: dict[str, Any],
-        grids: dict[str, ArrayLike],
-        grid_coord_names: list[tuple[str, str]] | None = None,
-        x_coord_name: str | None = None,
-    ):
-        """
-        Evaluate the log-density of the model on 2D grids of coordinates paired with the
-        same x coordinate. For example, in the context of a stream model, the x
-        coordinate would likely be the "phi1" coordinate.
-
-        Parameters
-        ----------
-        pars
-            A dictionary of parameter values for the model component.
-        grids
-            A dictionary of 1D grids for each coordinate in the model component. The
-            keys should be the names of the coordinates you want to evaluate the model
-            on, and must always contain the x coordinate.
-        grid_coord_names
-            A list of tuples of coordinate names to evaluate the model on. The default
-            is to pair the x coordinate with each other coordinate in the model
-            component. For example, if the model component has coordinates "phi1",
-            "phi2", and "pm1", the default grid_coord_names would be [("phi1", "phi2"),
-            ("phi1", "pm1")].
-        x_coord_name
-            The name of the x coordinate to use for evaluating the model. If None, the
-            default x coordinate will be used, which is taken to be the 0th coordinate
-            name in the specified "coord_distributions".
-        """
-        x_coord_name = self.default_x_coord if x_coord_name is None else x_coord_name
-
-        if x_coord_name not in self._coord_names:
-            msg = f"{x_coord_name} is not a valid coordinate name"
-            raise ValueError(msg)
-
-        if grid_coord_names is None:
-            # Pair the x coordinate with each other coordinate in the model component
-            grid_coord_names = [
-                (x_coord_name, coord_name) for coord_name in self._coord_names[1:]
-            ]
-
-        for name_pair in grid_coord_names:
-            if name_pair[0] != x_coord_name:
-                # TODO: we could make this more general, but then some logic below needs
-                # to become more general
-                msg = (
-                    "We currently only support evaluating on 2D grids with the same x "
-                    "coordinate axis for all grids"
-                )
-                raise ValueError(msg)
-
-        # validate grid_coord_names
-        for name_pair in grid_coord_names:
-            for name in name_pair:
-                if name not in self._coord_names:
-                    msg = f"{name} is not a valid coordinate name"
-                    raise ValueError(msg)
-
-        grids_2d = self._get_grids_2d(grids, grid_coord_names)
-
-        # Extra data to pass to log_prob() for each coordinate:
-        grid_cs = {k: 0.5 * (grids[k][:-1] + grids[k][1:]) for k in grids}
-        conditional_data = self._make_conditional_data(grid_cs)
-
-        # Make the distributions for each coordinate:
-        dists = self.make_dists(pars)
-
-        # First we have to check if the model component for the x coordinate is in a
-        # joint distribution with another coordinate. If it is, we need to evaluate the
-        # joint distribution on the grid and compute the marginal distribution for x:
-        if x_coord_name not in self.coord_distributions:
-            # At this point, x_coord_name is definitely a valid coord name, but it
-            # doesn't exist as a string key in coord_distributions - it must be in a
-            # joint:
-            for x_joint_name_pair in self.coord_distributions:
-                if x_coord_name in x_joint_name_pair:
-                    break
-
-            # Evaluate the joint distribution on the grids:
-            grid1, grid2 = grids_2d[x_joint_name_pair]
-            grid1_c = 0.5 * (grid1[:-1, :-1] + grid1[1:, 1:])
-            grid2_c = 0.5 * (grid2[:-1, :-1] + grid2[1:, 1:])
-
-            ln_p = dists[x_joint_name_pair].log_prob(
-                jnp.stack((grid1_c, grid2_c), axis=-1),
-                **conditional_data[x_joint_name_pair],
-            )
-
-            # Integrates over the other coordinate to get the marginal distribution for
-            # x:
-            ln_p_x = ln_simpson(ln_p, grid2_c, axis=0)
-            x_grid = grid1_c
-
-        else:
-            # Otherwise, we can just evaluate the model on the x coordinate grid:
-            grid = grids[x_coord_name]
-            x_grid = 0.5 * (grid[:-1] + grid[1:])
-            ln_p_x = dists[x_coord_name].log_prob(
-                x_grid, **conditional_data[x_coord_name]
-            )
-
-        evals = {}
-        for name_pair in grid_coord_names:
-            grid1, grid2 = grids_2d[name_pair]
-
-            # grid edges passed in, but we evaluate at grid centers:
-            grid1_c = 0.5 * (grid1[:-1, :-1] + grid1[1:, 1:])
-            grid2_c = 0.5 * (grid2[:-1, :-1] + grid2[1:, 1:])
-
-            # Evaluate the model on the grid
-            if name_pair in self.coord_distributions:
-                # It's a joint distribution:
-                evals[name_pair] = dists[name_pair].log_prob(
-                    jnp.stack((grid1_c, grid2_c), axis=-1),
-                    **conditional_data[name_pair],
-                )
-            else:
-                # It's an independent distribution from the x_coord_name:
-                ln_p_y = dists[name_pair[1]].log_prob(
-                    grid2_c, **conditional_data[name_pair[1]]
-                )
-                evals[name_pair] = ln_p_x + ln_p_y
-
-        return grids_2d, evals
-
     def plot_model_projections(
         self,
         pars: dict[str, Any],
@@ -641,6 +514,134 @@ class ModelComponent(eqx.Module, ModelMixin):
 
         return {k: samples[k] for k in self.coord_distributions}
 
+    def evaluate_on_2d_grids(
+        self,
+        pars: dict[str, Any],
+        grids: dict[str, ArrayLike],
+        grid_coord_names: list[tuple[str, str]] | None = None,
+        x_coord_name: str | None = None,
+        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+    ):
+        """
+        Evaluate the log-density of the model on 2D grids of coordinates paired with the
+        same x coordinate. For example, in the context of a stream model, the x
+        coordinate would likely be the "phi1" coordinate.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameter values for the model component.
+        grids
+            A dictionary of 1D grids for each coordinate in the model component. The
+            keys should be the names of the coordinates you want to evaluate the model
+            on, and must always contain the x coordinate.
+        grid_coord_names
+            A list of tuples of coordinate names to evaluate the model on. The default
+            is to pair the x coordinate with each other coordinate in the model
+            component. For example, if the model component has coordinates "phi1",
+            "phi2", and "pm1", the default grid_coord_names would be [("phi1", "phi2"),
+            ("phi1", "pm1")].
+        x_coord_name
+            The name of the x coordinate to use for evaluating the model. If None, the
+            default x coordinate will be used, which is taken to be the 0th coordinate
+            name in the specified "coord_distributions".
+        """
+        x_coord_name = self.default_x_coord if x_coord_name is None else x_coord_name
+
+        if x_coord_name not in self._coord_names:
+            msg = f"{x_coord_name} is not a valid coordinate name"
+            raise ValueError(msg)
+
+        if grid_coord_names is None:
+            # Pair the x coordinate with each other coordinate in the model component
+            grid_coord_names = [
+                (x_coord_name, coord_name) for coord_name in self._coord_names[1:]
+            ]
+
+        for name_pair in grid_coord_names:
+            if name_pair[0] != x_coord_name:
+                # TODO: we could make this more general, but then some logic below needs
+                # to become more general
+                msg = (
+                    "We currently only support evaluating on 2D grids with the same x "
+                    "coordinate axis for all grids"
+                )
+                raise ValueError(msg)
+
+        # validate grid_coord_names
+        for name_pair in grid_coord_names:
+            for name in name_pair:
+                if name not in self._coord_names:
+                    msg = f"{name} is not a valid coordinate name"
+                    raise ValueError(msg)
+
+        grids_2d = self._get_grids_2d(grids, grid_coord_names)
+
+        # Extra data to pass to log_prob() for each coordinate:
+        grid_cs = {k: 0.5 * (grids[k][:-1] + grids[k][1:]) for k in grids}
+        conditional_data = self._make_conditional_data(grid_cs)
+
+        # Make the distributions for each coordinate:
+        dists = self.make_dists(pars=pars, overrides=overrides)
+
+        # First we have to check if the model component for the x coordinate is in a
+        # joint distribution with another coordinate. If it is, we need to evaluate the
+        # joint distribution on the grid and compute the marginal distribution for x:
+        if x_coord_name not in self.coord_distributions:
+            # At this point, x_coord_name is definitely a valid coord name, but it
+            # doesn't exist as a string key in coord_distributions - it must be in a
+            # joint:
+            for x_joint_name_pair in self.coord_distributions:
+                if x_coord_name in x_joint_name_pair:
+                    break
+
+            # Evaluate the joint distribution on the grids:
+            grid1, grid2 = grids_2d[x_joint_name_pair]
+            grid1_c = 0.5 * (grid1[:-1, :-1] + grid1[1:, 1:])
+            grid2_c = 0.5 * (grid2[:-1, :-1] + grid2[1:, 1:])
+
+            ln_p = dists[x_joint_name_pair].log_prob(
+                jnp.stack((grid1_c, grid2_c), axis=-1),
+                **conditional_data[x_joint_name_pair],
+            )
+
+            # Integrates over the other coordinate to get the marginal distribution for
+            # x:
+            ln_p_x = ln_simpson(ln_p, grid2_c, axis=0)
+            x_grid = grid1_c
+
+        else:
+            # Otherwise, we can just evaluate the model on the x coordinate grid:
+            grid = grids[x_coord_name]
+            x_grid = 0.5 * (grid[:-1] + grid[1:])
+            ln_p_x = dists[x_coord_name].log_prob(
+                x_grid, **conditional_data[x_coord_name]
+            )
+
+        evals = {}
+        for name_pair in grid_coord_names:
+            grid1, grid2 = grids_2d[name_pair]
+
+            # grid edges passed in, but we evaluate at grid centers:
+            grid1_c = 0.5 * (grid1[:-1, :-1] + grid1[1:, 1:])
+            grid2_c = 0.5 * (grid2[:-1, :-1] + grid2[1:, 1:])
+
+            # Evaluate the model on the grid
+            if name_pair in self.coord_distributions:
+                # It's a joint distribution:
+                evals[name_pair] = dists[name_pair].log_prob(
+                    jnp.stack((grid1_c, grid2_c), axis=-1),
+                    **conditional_data[name_pair],
+                )
+            else:
+                # It's an independent distribution from the x_coord_name:
+                ln_p_y = dists[name_pair[1]].log_prob(
+                    grid2_c, **conditional_data[name_pair[1]]
+                )
+                evals[name_pair] = ln_p_x + ln_p_y
+
+        return grids_2d, evals
+
     ###################################################################################
     # Methods that can be overridden in subclasses:
     #
@@ -655,7 +656,7 @@ class ModelComponent(eqx.Module, ModelMixin):
 class ComponentMixtureModel(eqx.Module, ModelMixin):
     mixing_probs: dist.Dirichlet | ArrayLike
     components: list[ModelComponent]
-    tied_coordinates: dict[str, dict[str, str]] | None = None
+    tied_coordinates: dict[str, dict[str, str]] = eqx.field(default=None)
 
     coord_names: tuple[str] = eqx.field(init=False)
     _tied_order: list[str] = eqx.field(init=False)
@@ -767,6 +768,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         probs = numpyro.sample("mixture-probs", self.mixing_probs)
 
         # Deal with tied coordinates here across components:
+        # TODO(adrn): Duplicated code
         _combined_components: dict[str, _StackedModelComponent] = {}
         for component_name in self._tied_order:
             tied_map = self.tied_coordinates.get(component_name, {})
@@ -844,13 +846,34 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
     ):
         expanded_pars = self.expand_numpyro_params(pars)
 
-        terms = {}
+        # Deal with tied coordinates here across components:
+        # TODO(adrn): duplicated code
+        component_dists: dict[str, dict[CoordinateName, dist.Distribution]] = {}
+        overrides: dict[str, dict] = {}
+        for component_name in self._tied_order:
+            tied_map = self.tied_coordinates.get(component_name, {})
+
+            overrides[component_name] = {
+                override_coord: component_dists[dep][override_coord]
+                for override_coord, dep in tied_map.items()
+            }
+
+            component_dists[component_name] = self._components[
+                component_name
+            ].make_dists(
+                pars=expanded_pars[component_name],
+                overrides=overrides.get(component_name, {}),
+            )
+
+        terms: dict[str, list[jax.Array]] = {}
         for component in self.components:
+            # TODO: need an overrides here too, but damn that interface sucks
             all_grids, component_terms = component.evaluate_on_2d_grids(
                 pars=expanded_pars[component.name],
                 grids=grids,
                 grid_coord_names=grid_coord_names,
                 x_coord_name=x_coord_name,
+                overrides=overrides.get(component.name, {}),
             )
             for k, v in component_terms.items():
                 if k not in terms:
