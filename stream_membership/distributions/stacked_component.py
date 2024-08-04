@@ -15,6 +15,8 @@ class _StackedModelComponent(dist.Distribution):
         overrides: dict[CoordinateName, dist.Distribution] | None = None,
     ):
         """
+        NOTE: for internal use only.
+
         TODO: docstring
         """
         self.model_component = model_component

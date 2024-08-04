@@ -16,8 +16,7 @@ from jax_ext.integrate import ln_simpson
 from numpyro.handlers import seed
 
 from .plot import _plot_projections
-
-CoordinateName = str | tuple[str, str]
+from .typing import CoordinateName
 
 
 class ModelMixin:
