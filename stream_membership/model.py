@@ -15,8 +15,8 @@ from jax.typing import ArrayLike
 from jax_ext.integrate import ln_simpson
 from numpyro.handlers import seed
 
+from ._typing import CoordinateName
 from .plot import _plot_projections
-from .typing import CoordinateName
 
 
 class ModelMixin:
@@ -762,7 +762,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         """
         This sets up the mixture model in numpyro.
         """
-        from .numpyro_dist import _StackedModelComponent
+        from .distributions import _StackedModelComponent
 
         probs = numpyro.sample("mixture-probs", self.mixing_probs)
 

@@ -1,3 +1,5 @@
+__all__ = ["_StackedModelComponent"]
+
 import jax
 import jax.numpy as jnp
 import numpyro.distributions as dist
