@@ -66,9 +66,11 @@ allow-direct-references = true
 #   'if typing.TYPE_CHECKING:',
 # ]
 
-# NOTE: disable mypy type checks
-[tool.mypy]
-# exclude =  ["stream_membership"]
+[[tool.mypy.overrides]]
+module = [
+  "numpyro.*",
+]
+ignore_missing_imports = true
 
 [tool.ruff]
 
