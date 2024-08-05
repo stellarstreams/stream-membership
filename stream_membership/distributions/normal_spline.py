@@ -52,6 +52,7 @@ class NormalSpline(dist.Distribution):
         self.loc_vals = jnp.array(loc_vals)
         self.ln_scale_vals = jnp.array(ln_scale_vals)
 
+        # TODO: probably a way to vmap here instead...
         if self.loc_vals.ndim == 0:
             self._loc_spl = lambda _: self.loc_vals
         else:
@@ -168,3 +169,7 @@ class TruncatedNormalSpline(NormalSpline):
             low=self.low,
             high=self.high,
         )
+
+    @property
+    def support(self):
+        return dist.constraints.interval(self.low, self.high)
