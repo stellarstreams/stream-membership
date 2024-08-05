@@ -20,6 +20,7 @@ class Normal1DSplineMixture(dist.MixtureGeneral):
         x: ArrayLike,
         spline_k: int = 3,
         *,
+        ordered_scales: bool = True,
         validate_args=None,
     ):
         """
@@ -70,6 +71,16 @@ class Normal1DSplineMixture(dist.MixtureGeneral):
         self._ln_scale_vals = jnp.broadcast_to(
             self.ln_scale_vals, (self._n_components, self._n_knots)
         )
+        if ordered_scales:
+            # If specified, treat the scales as cumulatively summed variances
+            self._ln_scale_vals = jnp.stack(
+                [
+                    0.5
+                    * jax.scipy.special.logsumexp(2 * self._ln_scale_vals[:i], axis=0)
+                    for i in range(1, self._ln_scale_vals.shape[0] + 1)
+                ],
+                axis=0,
+            )
         super().__init__(
             mixing_distribution,
             self._make_components(),
