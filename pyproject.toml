@@ -69,6 +69,7 @@ allow-direct-references = true
 [[tool.mypy.overrides]]
 module = [
   "numpyro.*",
+  "jax_cosmo.*"
 ]
 ignore_missing_imports = true
 
