@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from ..numpyro_dist import DirichletSpline, NormalSpline, TruncatedNormalSpline
+from .. import DirichletSpline, NormalSpline, TruncatedNormalSpline
 
 
 def make_dists(seed=867):
