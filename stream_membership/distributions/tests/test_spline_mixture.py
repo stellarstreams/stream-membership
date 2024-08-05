@@ -39,3 +39,6 @@ def test_mixture(SplineClass, extra_kwargs):
     if isinstance(mix, TruncatedNormal1DSplineMixture):
         assert jnp.all(jnp.isfinite(lp[value_grid < extra_kwargs["high"]]))
         assert jnp.all(~jnp.isfinite(lp[value_grid > extra_kwargs["high"]]))
+
+    else:
+        assert jnp.all(jnp.isfinite(lp))
