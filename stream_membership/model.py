@@ -258,6 +258,16 @@ class ModelComponent(eqx.Module, ModelMixin):
                 raise ValueError(msg)
         self._sample_order = self._make_sample_order()
 
+        # Validate that coordinate names can't have "-" and component, coordinate, and
+        # parameter names can't have ":"
+        if any("-" in name for name in self._coord_names):
+            msg = "Coordinate names can't contain '-'"
+            raise ValueError(msg)
+
+        if any(":" in name for name in self._coord_names) or ":" in self.name:
+            msg = "Coordinate names and component names can't contain ':'"
+            raise ValueError(msg)
+
     @property
     def coord_names(self):
         return self._coord_names
@@ -278,8 +288,6 @@ class ModelComponent(eqx.Module, ModelMixin):
         arg_name
             The name of the parameter used in the model component for the coordinate.
         """
-        # TODO: need to validate somewhere that coordinate names can't have "-" and
-        # component, coordinate, and parameter names can't have ":"
         if isinstance(coord_name, tuple):
             coord_name = "-".join(coord_name)
 
@@ -308,6 +316,27 @@ class ModelComponent(eqx.Module, ModelMixin):
             tuple(bits[1].split("-")) if "-" in bits[1] else bits[1],
             bits[2],
         )
+
+    def pack_params(self, pars: dict[CoordinateName, Any]) -> dict[str, Any]:
+        """
+        Convert a dictionary of parameters as a nested dictionary into a flat dictionary
+        with packed numpyro-compatible names.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameters where the keys are the names of the coordinates
+            in the model component and the values are dictionaries of the parameters for
+            each coordinate.
+        """
+        packed_pars: dict[str, Any] = {}
+
+        for coord_name, sub_pars in pars.items():
+            for arg_name, val in sub_pars.items():
+                numpyro_name = self._make_numpyro_name(coord_name, arg_name)
+                packed_pars[numpyro_name] = val
+
+        return packed_pars
 
     def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
         """
@@ -762,7 +791,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         """
         This sets up the mixture model in numpyro.
         """
-        from .distributions import _StackedModelComponent
+        from .distributions.stacked_component import _StackedModelComponent
 
         probs = numpyro.sample("mixture-probs", self.mixing_probs)
 
@@ -811,7 +840,30 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 numpyro.sample(f"{name}-obs", model_data_dist, obs=stacked_data[:, slc])
                 i += size
 
-    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+    def pack_params(
+        self, pars: dict[str, dict[CoordinateName, dict]]
+    ) -> dict[str, Any]:
+        """
+        Convert a dictionary of parameters as a nested dictionary into a flat dictionary
+        with packed numpyro-compatible names.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameters where the keys are the names of the components in
+            the model and the values are dictionaries of the parameters for each
+            coordinate in the component.
+        """
+        packed_pars = {}
+        for component_name, component_pars in pars.items():
+            packed_pars.update(
+                self._components[component_name].pack_params(component_pars)
+            )
+        return packed_pars
+
+    def expand_numpyro_params(
+        self, pars: dict[str, Any]
+    ) -> dict[str, dict[CoordinateName, Any]]:
         """
         Convert a dictionary of numpyro parameters into a nested dictionary where the
         keys are the coordinate names and parameter name.
