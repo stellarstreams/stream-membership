@@ -398,7 +398,7 @@ class ModelComponent(eqx.Module, ModelMixin):
 
                 # Note: passing in a tuple as a value is a way to wrap the value in a
                 # function or outer distribution, for example for a mixture model
-                if isinstance(val, tuple):
+                if isinstance(val, tuple) and callable(val[0]):
                     wrapper, val = val  # noqa: PLW2901
                 else:
                     wrapper = lambda x: x  # noqa: E731
@@ -490,7 +490,7 @@ class ModelComponent(eqx.Module, ModelMixin):
                 model_val = numpyro.sample(numpyro_name, dist_)
                 numpyro.sample(
                     f"{numpyro_name}-obs",
-                    dist.Normal(model_val, data[f"{coord_name}_err"]),
+                    dist.Normal(model_val, _data_err),
                     obs=_data,
                 )
             else:
@@ -825,6 +825,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             model_data = numpyro.sample(
                 "mixture", mixture, sample_shape=(stacked_data.shape[0],)
             )
+
             i = 0
             for name in self.coord_names:
                 # TODO: assumes that joints can only have at most 2 coordinates. This is
@@ -875,8 +876,11 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             parameters created with numpyro.sample().
         """
         pars = copy.deepcopy(pars)
-        expanded_pars = {}
-        for component in self.components:
+
+        expanded_pars: dict[str, dict] = {}
+        for component_name in self._tied_order:
+            component = self._components[component_name]
+            tied_map = self.tied_coordinates.get(component.name, {})
             component_pars = {}
             for key in list(pars.keys()):  # convert to list because we change dict keys
                 if key.startswith(f"{component.name}:"):
@@ -884,6 +888,17 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             expanded_pars[component.name] = component.expand_numpyro_params(
                 component_pars
             )
+
+            # TODO(adrn): duplicated code
+            for override_coord, dep in tied_map.items():
+                # First, we set with the parameters from the coord_parameters, then
+                # update values from the tied component
+                expanded_pars[component.name][override_coord] = copy.deepcopy(
+                    self._components[dep].coord_parameters[override_coord]
+                )
+                expanded_pars[component.name][override_coord].update(
+                    expanded_pars[dep][override_coord]
+                )
 
         expanded_pars.update(pars)
         return expanded_pars
@@ -895,6 +910,8 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
     ):
+        # TODO: should have a way to detect if pars are already expanded or not, to
+        # allow passing in packed or expanded parameter dictionary
         expanded_pars = self.expand_numpyro_params(pars)
 
         # Deal with tied coordinates here across components:
