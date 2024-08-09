@@ -5,8 +5,13 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpyro.distributions as dist
+from jax import lax
 from jax.typing import ArrayLike
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
+
+
+def _clip_preserve_gradients(x, min_, max_):
+    return x + lax.stop_gradient(jnp.clip(x, min_, max_) - x)
 
 
 class NormalSpline(dist.Distribution):
@@ -15,10 +20,12 @@ class NormalSpline(dist.Distribution):
     def __init__(
         self,
         loc_vals: ArrayLike,
-        ln_scale_vals: ArrayLike,
+        scale_vals: ArrayLike,
         knots: ArrayLike,
         x: ArrayLike,
         spline_k: int | dict[str, int] = 3,
+        clip_locs: tuple[float | None, float | None] = (None, None),
+        clip_scales: tuple[float | None, float | None] = (None, None),
     ) -> None:
         """
         Represents a Normal distribution where the loc and (log)scale parameters are
@@ -29,28 +36,30 @@ class NormalSpline(dist.Distribution):
         ----------
         loc_vals
             Array of loc values at the knot locations.
-        ln_scale_vals
-            Array of log scale values at the knot locations.
+        scale_vals
+            Array of scale values at the knot locations.
         knots
             Array of spline knot locations.
         x
             Array of x values at which to evaluate the splines.
         spline_k (optional)
             Degree of the spline. Can be a single integer or a dictionary with keys
-            "loc" and "ln_scale" specifying the degrees of the loc and ln_scale splines
+            "loc" and "scale" specifying the degrees of the loc and scale splines
             respectively.
         """
 
         super().__init__(batch_shape=(), event_shape=())
 
         self.knots = jnp.array(knots)
+        self.clip_locs = tuple(clip_locs)
+        self.clip_scales = tuple(clip_scales)
 
         if not isinstance(spline_k, dict):
-            spline_k = {"loc": spline_k, "ln_scale": spline_k}
+            spline_k = {"loc": spline_k, "scale": spline_k}
         self.spline_k = spline_k
         self.x = jnp.array(x)
         self.loc_vals = jnp.array(loc_vals)
-        self.ln_scale_vals = jnp.array(ln_scale_vals)
+        self.scale_vals = jnp.array(scale_vals)
 
         # TODO: probably a way to vmap here instead...
         if self.loc_vals.ndim == 0:
@@ -63,19 +72,22 @@ class NormalSpline(dist.Distribution):
                 endpoints="not-a-knot",  # TODO: make this customizable?
             )
 
-        if self.ln_scale_vals.ndim == 0:
-            self._ln_scale_spl = lambda _: self.ln_scale_vals
+        if self.scale_vals.ndim == 0:
+            self._scale_spl = lambda _: self.scale_vals
         else:
-            self._ln_scale_spl = InterpolatedUnivariateSpline(
+            self._scale_spl = InterpolatedUnivariateSpline(
                 self.knots,
-                self.ln_scale_vals,
-                k=self.spline_k["ln_scale"],
+                self.scale_vals,
+                k=self.spline_k["scale"],
                 endpoints="not-a-knot",  # TODO: make this customizable?
             )
 
     def _make_helper_dist(self, x: ArrayLike | None = None) -> dist.Normal:
         x = self.x if x is None else x
-        return dist.Normal(loc=self._loc_spl(x), scale=jnp.exp(self._ln_scale_spl(x)))
+        return dist.Normal(
+            loc=_clip_preserve_gradients(self._loc_spl(x), *self.clip_locs),
+            scale=_clip_preserve_gradients(self._scale_spl(x), *self.clip_scales),
+        )
 
     def sample(
         self,
@@ -119,12 +131,14 @@ class TruncatedNormalSpline(NormalSpline):
     def __init__(
         self,
         loc_vals: ArrayLike,
-        ln_scale_vals: ArrayLike,
+        scale_vals: ArrayLike,
         knots: ArrayLike,
         x: ArrayLike,
         low: Any | None = None,
         high: Any | None = None,
         spline_k: int | dict[str, int] = 3,
+        clip_locs: tuple[float | None, float | None] = (None, None),
+        clip_scales: tuple[float | None, float | None] = (None, None),
     ) -> None:
         """
         Represents a truncated Normal distribution where the loc and (log)scale
@@ -135,7 +149,7 @@ class TruncatedNormalSpline(NormalSpline):
         ----------
         loc_vals
             Array of loc values at the knot locations.
-        ln_scale_vals
+        scale_vals
             Array of log scale values at the knot locations.
         knots
             Array of spline knot locations.
@@ -147,12 +161,12 @@ class TruncatedNormalSpline(NormalSpline):
             Upper bound of the distribution.
         spline_k (optional)
             Degree of the spline. Can be a single integer or a dictionary with keys
-            "loc" and "ln_scale" specifying the degrees of the loc and ln_scale splines
+            "loc" and "scale" specifying the degrees of the loc and scale splines
             respectively.
         """
         super().__init__(
             loc_vals=loc_vals,
-            ln_scale_vals=ln_scale_vals,
+            scale_vals=scale_vals,
             knots=knots,
             x=x,
             spline_k=spline_k,
@@ -161,15 +175,25 @@ class TruncatedNormalSpline(NormalSpline):
         self.low = low
         self.high = high
 
+        self.clip_locs = tuple(clip_locs)
+        self.clip_scales = tuple(clip_scales)
+
     def _make_helper_dist(self, x: ArrayLike | None = None) -> dist.Normal:
         x = self.x if x is None else x
         return dist.TruncatedNormal(
-            loc=self._loc_spl(x),
-            scale=jnp.exp(self._ln_scale_spl(x)),
+            loc=_clip_preserve_gradients(self._loc_spl(x), *self.clip_locs),
+            scale=_clip_preserve_gradients(self._scale_spl(x), *self.clip_scales),
             low=self.low,
             high=self.high,
         )
 
     @property
     def support(self):
-        return dist.constraints.interval(self.low, self.high)
+        if self.low is None and self.high is None:
+            return dist.constraints.real
+        elif self.low is None:
+            return dist.constraints.less_than(self.high)
+        elif self.high is None:
+            return dist.constraints.greater_than(self.low)
+        else:
+            return dist.constraints.interval(self.low, self.high)
