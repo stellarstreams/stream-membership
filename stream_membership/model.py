@@ -731,10 +731,18 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         )
         # TODO: out of laziness, we only support non-joint coordinates in tied
         # coordinates for now...
-        for coord_name in self.tied_coordinates:
-            if not isinstance(coord_name, str):
-                msg = "Only non-joint coordinates are supported in tied coordinates"
-                raise NotImplementedError(msg)
+        for component_name, coords in self.tied_coordinates.items():
+            if component_name not in self._components:
+                msg = (
+                    f"Component '{component_name}' passed in to tied_coordinates not "
+                    "found in the mixture model"
+                )
+                raise ValueError(msg)
+
+            for coord_name in coords:
+                if not isinstance(coord_name, str):
+                    msg = "Only non-joint coordinates are supported in tied coordinates"
+                    raise NotImplementedError(msg)
 
         # Check for circular dependencies and set up order of components to create dists
         # for:
