@@ -116,6 +116,9 @@ class _StackedModelComponent(dist.Distribution):
             sample_shape,
             dists=self._model_component_dists,
         )
-        return jnp.concatenate(
-            [jnp.atleast_2d(s.T).T for s in samples.values()], axis=-1
-        )
+        if not sample_shape:
+            return jnp.concatenate([jnp.atleast_1d(s) for s in samples.values()])
+        else:
+            return jnp.concatenate(
+                [jnp.atleast_2d(s.T).T for s in samples.values()], axis=-1
+            )
