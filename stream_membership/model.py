@@ -430,7 +430,6 @@ class ModelComponent(eqx.Module, ModelMixin):
             conditional_data[coord_name] = {}
             for key, val in data_map.items():
                 # NOTE: behavior - if key is missing from data, we pass None
-                # TODO: need to be smarter here to read from possible joint data
                 conditional_data[coord_name][key] = get_coord_from_data_dict(val, data)
 
         return conditional_data
