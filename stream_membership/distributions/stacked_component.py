@@ -42,7 +42,7 @@ class _StackedModelComponent(dist.Distribution):
         self,
         model_component: ModelComponent,
         pars: dict | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
     ):
         """
         NOTE: for internal use only.
@@ -54,9 +54,10 @@ class _StackedModelComponent(dist.Distribution):
             batch_shape=(),
             event_shape=(len(self.model_component.coord_names),),
         )
-        self.overrides = overrides
+        self.pars = pars
+        self._inputted_dists = dists
         self._model_component_dists = self.model_component.make_dists(
-            pars, self.overrides
+            pars, self._inputted_dists
         )
 
         # Set up the support
@@ -106,10 +107,14 @@ class _StackedModelComponent(dist.Distribution):
         return jnp.sum(self.component_log_probs(value), axis=-1)
 
     def sample(
-        self, key: jax._src.random.KeyArray, sample_shape: tuple = ()
+        self,
+        key: jax._src.random.KeyArray,
+        sample_shape: tuple = (),
     ) -> jax.Array:
         samples = self.model_component.sample(
-            key, sample_shape, overrides=self.overrides
+            key,
+            sample_shape,
+            dists=self._model_component_dists,
         )
         return jnp.concatenate(
             [jnp.atleast_2d(s.T).T for s in samples.values()], axis=-1

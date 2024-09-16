@@ -17,6 +17,7 @@ from numpyro.handlers import seed
 
 from ._typing import CoordinateName
 from .plot import _plot_projections
+from .utils import get_coord_from_data_dict
 
 
 class ModelMixin:
@@ -363,7 +364,7 @@ class ModelComponent(eqx.Module, ModelMixin):
     def make_dists(
         self,
         pars: dict[CoordinateName, Any] | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
     ) -> dict[str | tuple, Any]:
         """
         Make a dictionary of distributions for each coordinate in the component.
@@ -383,14 +384,12 @@ class ModelComponent(eqx.Module, ModelMixin):
             distribution. "value" is the value to pass to the numpyro.sample() call.
         """
         pars = pars if pars is not None else {}
-        overrides = overrides if overrides is not None else {}
+        dists = dists if dists is not None else {}
 
-        dists = {}
         for coord_name, Distribution in self.coord_distributions.items():
             kwargs = {}
 
-            if coord_name in overrides:
-                dists[coord_name] = overrides[coord_name]
+            if coord_name in dists:
                 continue
 
             for arg, val in self.coord_parameters.get(coord_name, {}).items():
@@ -431,7 +430,8 @@ class ModelComponent(eqx.Module, ModelMixin):
             conditional_data[coord_name] = {}
             for key, val in data_map.items():
                 # NOTE: behavior - if key is missing from data, we pass None
-                conditional_data[coord_name][key] = data.get(val, None)
+                # TODO: need to be smarter here to read from possible joint data
+                conditional_data[coord_name][key] = get_coord_from_data_dict(val, data)
 
         return conditional_data
 
@@ -509,8 +509,8 @@ class ModelComponent(eqx.Module, ModelMixin):
         key: jax._src.random.KeyArray,
         sample_shape: Any = (),
         pars: dict[CoordinateName, Any] | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
-    ) -> dict[str, jax.Array]:
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
+    ) -> dict[CoordinateName, jax.Array]:
         """
         Sample from the model component. If no parameters `pars` are passed, this will
         sample from the prior. All of the coordinate distributions must be sample-able
@@ -526,18 +526,18 @@ class ModelComponent(eqx.Module, ModelMixin):
             A dictionary of parameters for the model component.
         """
         if pars is None:
-            dists = seed(self.make_dists, key)(overrides=overrides)
+            dists_ = seed(self.make_dists, key)(dists=dists)
         else:
-            dists = self.make_dists(pars=pars, overrides=overrides)
+            dists_ = self.make_dists(pars=pars, dists=dists)
 
         keys = jax.random.split(key, len(self.coord_distributions))
 
         samples: dict[CoordinateName, jax.Array] = {}
-        for coord_name, key in zip(self._sample_order, keys, strict=True):
+        for coord_name, key_ in zip(self._sample_order, keys, strict=True):
             extra_data = self._make_conditional_data(samples)
             shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
-            samples[coord_name] = dists[coord_name].sample(
-                key, shape, **extra_data[coord_name]
+            samples[coord_name] = dists_[coord_name].sample(
+                key_, shape, **extra_data[coord_name]
             )
 
         return {k: samples[k] for k in self.coord_distributions}
@@ -548,7 +548,7 @@ class ModelComponent(eqx.Module, ModelMixin):
         grids: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
     ):
         """
         Evaluate the log-density of the model on 2D grids of coordinates paired with the
@@ -610,7 +610,7 @@ class ModelComponent(eqx.Module, ModelMixin):
         conditional_data = self._make_conditional_data(grid_cs)
 
         # Make the distributions for each coordinate:
-        dists = self.make_dists(pars=pars, overrides=overrides)
+        dists = self.make_dists(pars=pars, dists=dists)
 
         # First we have to check if the model component for the x coordinate is in a
         # joint distribution with another coordinate. If it is, we need to evaluate the
@@ -809,14 +809,14 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         for component_name in self._tied_order:
             tied_map = self.tied_coordinates.get(component_name, {})
 
-            overrides = {
+            dists = {
                 override_coord: _combined_components[dep]._model_component_dists[
                     override_coord
                 ]
                 for override_coord, dep in tied_map.items()
             }
             _combined_components[component_name] = _StackedModelComponent(
-                self._components[component_name], overrides=overrides
+                self._components[component_name], dists=dists
             )
 
         # Here we make sure the order we pass in the components respects the original
@@ -925,11 +925,11 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         # Deal with tied coordinates here across components:
         # TODO(adrn): duplicated code
         component_dists: dict[str, dict[CoordinateName, dist.Distribution]] = {}
-        overrides: dict[str, dict] = {}
+        dists: dict[str, dict] = {}
         for component_name in self._tied_order:
             tied_map = self.tied_coordinates.get(component_name, {})
 
-            overrides[component_name] = {
+            dists[component_name] = {
                 override_coord: component_dists[dep][override_coord]
                 for override_coord, dep in tied_map.items()
             }
@@ -938,18 +938,18 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 component_name
             ].make_dists(
                 pars=expanded_pars[component_name],
-                overrides=overrides.get(component_name, {}),
+                dists=dists.get(component_name, {}),
             )
 
         terms: dict[str, list[jax.Array]] = {}
         for component in self.components:
-            # TODO: need an overrides here too, but damn that interface sucks
+            # TODO: need to override dists here too, but damn that interface sucks
             all_grids, component_terms = component.evaluate_on_2d_grids(
                 pars=expanded_pars[component.name],
                 grids=grids,
                 grid_coord_names=grid_coord_names,
                 x_coord_name=x_coord_name,
-                overrides=overrides.get(component.name, {}),
+                dists=dists.get(component.name, {}),
             )
             for k, v in component_terms.items():
                 if k not in terms:
