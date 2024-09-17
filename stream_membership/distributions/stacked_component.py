@@ -38,6 +38,8 @@ class vector_interval(dist.constraints.Constraint):
 
 
 class _StackedModelComponent(dist.Distribution):
+    # TODO: set event shape to correct value??
+
     def __init__(
         self,
         model_component: ModelComponent,
@@ -119,6 +121,14 @@ class _StackedModelComponent(dist.Distribution):
         if not sample_shape:
             return jnp.concatenate([jnp.atleast_1d(s) for s in samples.values()])
         else:
+            # The shape to use for non-joint samples:
+            samples_list = [
+                s.reshape((*sample_shape, 1))
+                if isinstance(name, str)
+                else s.reshape((*sample_shape, 2))
+                for name, s in samples.items()
+            ]
+
             return jnp.concatenate(
-                [jnp.atleast_2d(s.T).T for s in samples.values()], axis=-1
-            )
+                [jnp.atleast_2d(s.T) for s in samples_list], axis=0
+            ).T

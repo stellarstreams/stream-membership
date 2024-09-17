@@ -825,7 +825,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             [_combined_components[name] for name in self.component_names],
         )
 
-        stacked_data = np.stack([data[k] for k in self.coord_names], axis=-1)
+        stacked_data = jnp.stack([data[k] for k in self.coord_names], axis=-1)
         if err is None:
             numpyro.sample("mixture", mixture, obs=stacked_data)
         else:
