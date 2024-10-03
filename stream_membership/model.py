@@ -15,9 +15,9 @@ from jax.typing import ArrayLike
 from jax_ext.integrate import ln_simpson
 from numpyro.handlers import seed
 
+from ._typing import CoordinateName
 from .plot import _plot_projections
-
-CoordinateName = str | tuple[str, str]
+from .utils import get_coord_from_data_dict
 
 
 class ModelMixin:
@@ -259,6 +259,16 @@ class ModelComponent(eqx.Module, ModelMixin):
                 raise ValueError(msg)
         self._sample_order = self._make_sample_order()
 
+        # Validate that coordinate names can't have "-" and component, coordinate, and
+        # parameter names can't have ":"
+        if any("-" in name for name in self._coord_names):
+            msg = "Coordinate names can't contain '-'"
+            raise ValueError(msg)
+
+        if any(":" in name for name in self._coord_names) or ":" in self.name:
+            msg = "Coordinate names and component names can't contain ':'"
+            raise ValueError(msg)
+
     @property
     def coord_names(self):
         return self._coord_names
@@ -279,8 +289,6 @@ class ModelComponent(eqx.Module, ModelMixin):
         arg_name
             The name of the parameter used in the model component for the coordinate.
         """
-        # TODO: need to validate somewhere that coordinate names can't have "-" and
-        # component, coordinate, and parameter names can't have ":"
         if isinstance(coord_name, tuple):
             coord_name = "-".join(coord_name)
 
@@ -310,6 +318,27 @@ class ModelComponent(eqx.Module, ModelMixin):
             bits[2],
         )
 
+    def pack_params(self, pars: dict[CoordinateName, Any]) -> dict[str, Any]:
+        """
+        Convert a dictionary of parameters as a nested dictionary into a flat dictionary
+        with packed numpyro-compatible names.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameters where the keys are the names of the coordinates
+            in the model component and the values are dictionaries of the parameters for
+            each coordinate.
+        """
+        packed_pars: dict[str, Any] = {}
+
+        for coord_name, sub_pars in pars.items():
+            for arg_name, val in sub_pars.items():
+                numpyro_name = self._make_numpyro_name(coord_name, arg_name)
+                packed_pars[numpyro_name] = val
+
+        return packed_pars
+
     def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
         """
         Convert a dictionary of numpyro parameters into a nested dictionary where the
@@ -335,7 +364,7 @@ class ModelComponent(eqx.Module, ModelMixin):
     def make_dists(
         self,
         pars: dict[CoordinateName, Any] | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
     ) -> dict[str | tuple, Any]:
         """
         Make a dictionary of distributions for each coordinate in the component.
@@ -355,14 +384,12 @@ class ModelComponent(eqx.Module, ModelMixin):
             distribution. "value" is the value to pass to the numpyro.sample() call.
         """
         pars = pars if pars is not None else {}
-        overrides = overrides if overrides is not None else {}
+        dists = dists if dists is not None else {}
 
-        dists = {}
         for coord_name, Distribution in self.coord_distributions.items():
             kwargs = {}
 
-            if coord_name in overrides:
-                dists[coord_name] = overrides[coord_name]
+            if coord_name in dists:
                 continue
 
             for arg, val in self.coord_parameters.get(coord_name, {}).items():
@@ -370,7 +397,7 @@ class ModelComponent(eqx.Module, ModelMixin):
 
                 # Note: passing in a tuple as a value is a way to wrap the value in a
                 # function or outer distribution, for example for a mixture model
-                if isinstance(val, tuple):
+                if isinstance(val, tuple) and callable(val[0]):
                     wrapper, val = val  # noqa: PLW2901
                 else:
                     wrapper = lambda x: x  # noqa: E731
@@ -403,7 +430,7 @@ class ModelComponent(eqx.Module, ModelMixin):
             conditional_data[coord_name] = {}
             for key, val in data_map.items():
                 # NOTE: behavior - if key is missing from data, we pass None
-                conditional_data[coord_name][key] = data.get(val, None)
+                conditional_data[coord_name][key] = get_coord_from_data_dict(val, data)
 
         return conditional_data
 
@@ -462,7 +489,7 @@ class ModelComponent(eqx.Module, ModelMixin):
                 model_val = numpyro.sample(numpyro_name, dist_)
                 numpyro.sample(
                     f"{numpyro_name}-obs",
-                    dist.Normal(model_val, data[f"{coord_name}_err"]),
+                    dist.Normal(model_val, _data_err),
                     obs=_data,
                 )
             else:
@@ -481,8 +508,8 @@ class ModelComponent(eqx.Module, ModelMixin):
         key: jax._src.random.KeyArray,
         sample_shape: Any = (),
         pars: dict[CoordinateName, Any] | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
-    ) -> dict[str, jax.Array]:
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
+    ) -> dict[CoordinateName, jax.Array]:
         """
         Sample from the model component. If no parameters `pars` are passed, this will
         sample from the prior. All of the coordinate distributions must be sample-able
@@ -498,18 +525,18 @@ class ModelComponent(eqx.Module, ModelMixin):
             A dictionary of parameters for the model component.
         """
         if pars is None:
-            dists = seed(self.make_dists, key)(overrides=overrides)
+            dists_ = seed(self.make_dists, key)(dists=dists)
         else:
-            dists = self.make_dists(pars=pars, overrides=overrides)
+            dists_ = self.make_dists(pars=pars, dists=dists)
 
         keys = jax.random.split(key, len(self.coord_distributions))
 
         samples: dict[CoordinateName, jax.Array] = {}
-        for coord_name, key in zip(self._sample_order, keys, strict=True):
+        for coord_name, key_ in zip(self._sample_order, keys, strict=True):
             extra_data = self._make_conditional_data(samples)
             shape = sample_shape if len(extra_data[coord_name]) == 0 else ()
-            samples[coord_name] = dists[coord_name].sample(
-                key, shape, **extra_data[coord_name]
+            samples[coord_name] = dists_[coord_name].sample(
+                key_, shape, **extra_data[coord_name]
             )
 
         return {k: samples[k] for k in self.coord_distributions}
@@ -520,7 +547,7 @@ class ModelComponent(eqx.Module, ModelMixin):
         grids: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
-        overrides: dict[CoordinateName, dist.Distribution] | None = None,
+        dists: dict[CoordinateName, dist.Distribution] | None = None,
     ):
         """
         Evaluate the log-density of the model on 2D grids of coordinates paired with the
@@ -582,7 +609,7 @@ class ModelComponent(eqx.Module, ModelMixin):
         conditional_data = self._make_conditional_data(grid_cs)
 
         # Make the distributions for each coordinate:
-        dists = self.make_dists(pars=pars, overrides=overrides)
+        dists = self.make_dists(pars=pars, dists=dists)
 
         # First we have to check if the model component for the x coordinate is in a
         # joint distribution with another coordinate. If it is, we need to evaluate the
@@ -703,10 +730,18 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         )
         # TODO: out of laziness, we only support non-joint coordinates in tied
         # coordinates for now...
-        for coord_name in self.tied_coordinates:
-            if not isinstance(coord_name, str):
-                msg = "Only non-joint coordinates are supported in tied coordinates"
-                raise NotImplementedError(msg)
+        for component_name, coords in self.tied_coordinates.items():
+            if component_name not in self._components:
+                msg = (
+                    f"Component '{component_name}' passed in to tied_coordinates not "
+                    "found in the mixture model"
+                )
+                raise ValueError(msg)
+
+            for coord_name in coords:
+                if not isinstance(coord_name, str):
+                    msg = "Only non-joint coordinates are supported in tied coordinates"
+                    raise NotImplementedError(msg)
 
         # Check for circular dependencies and set up order of components to create dists
         # for:
@@ -763,7 +798,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         """
         This sets up the mixture model in numpyro.
         """
-        from .numpyro_dist import _StackedModelComponent
+        from .distributions.stacked_component import _StackedModelComponent
 
         probs = numpyro.sample("mixture-probs", self.mixing_probs)
 
@@ -773,14 +808,14 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         for component_name in self._tied_order:
             tied_map = self.tied_coordinates.get(component_name, {})
 
-            overrides = {
+            dists = {
                 override_coord: _combined_components[dep]._model_component_dists[
                     override_coord
                 ]
                 for override_coord, dep in tied_map.items()
             }
             _combined_components[component_name] = _StackedModelComponent(
-                self._components[component_name], overrides=overrides
+                self._components[component_name], dists=dists
             )
 
         # Here we make sure the order we pass in the components respects the original
@@ -790,13 +825,14 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             [_combined_components[name] for name in self.component_names],
         )
 
-        stacked_data = np.stack([data[k] for k in self.coord_names], axis=-1)
+        stacked_data = jnp.stack([data[k] for k in self.coord_names], axis=-1)
         if err is None:
             numpyro.sample("mixture", mixture, obs=stacked_data)
         else:
             model_data = numpyro.sample(
                 "mixture", mixture, sample_shape=(stacked_data.shape[0],)
             )
+
             i = 0
             for name in self.coord_names:
                 # TODO: assumes that joints can only have at most 2 coordinates. This is
@@ -812,7 +848,30 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 numpyro.sample(f"{name}-obs", model_data_dist, obs=stacked_data[:, slc])
                 i += size
 
-    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+    def pack_params(
+        self, pars: dict[str, dict[CoordinateName, dict]]
+    ) -> dict[str, Any]:
+        """
+        Convert a dictionary of parameters as a nested dictionary into a flat dictionary
+        with packed numpyro-compatible names.
+
+        Parameters
+        ----------
+        pars
+            A dictionary of parameters where the keys are the names of the components in
+            the model and the values are dictionaries of the parameters for each
+            coordinate in the component.
+        """
+        packed_pars = {}
+        for component_name, component_pars in pars.items():
+            packed_pars.update(
+                self._components[component_name].pack_params(component_pars)
+            )
+        return packed_pars
+
+    def expand_numpyro_params(
+        self, pars: dict[str, Any]
+    ) -> dict[str, dict[CoordinateName, Any]]:
         """
         Convert a dictionary of numpyro parameters into a nested dictionary where the
         keys are the coordinate names and parameter name.
@@ -824,8 +883,11 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             parameters created with numpyro.sample().
         """
         pars = copy.deepcopy(pars)
-        expanded_pars = {}
-        for component in self.components:
+
+        expanded_pars: dict[str, dict] = {}
+        for component_name in self._tied_order:
+            component = self._components[component_name]
+            tied_map = self.tied_coordinates.get(component.name, {})
             component_pars = {}
             for key in list(pars.keys()):  # convert to list because we change dict keys
                 if key.startswith(f"{component.name}:"):
@@ -833,6 +895,17 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             expanded_pars[component.name] = component.expand_numpyro_params(
                 component_pars
             )
+
+            # TODO(adrn): duplicated code
+            for override_coord, dep in tied_map.items():
+                # First, we set with the parameters from the coord_parameters, then
+                # update values from the tied component
+                expanded_pars[component.name][override_coord] = copy.deepcopy(
+                    self._components[dep].coord_parameters[override_coord]
+                )
+                expanded_pars[component.name][override_coord].update(
+                    expanded_pars[dep][override_coord]
+                )
 
         expanded_pars.update(pars)
         return expanded_pars
@@ -844,16 +917,18 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
     ):
+        # TODO: should have a way to detect if pars are already expanded or not, to
+        # allow passing in packed or expanded parameter dictionary
         expanded_pars = self.expand_numpyro_params(pars)
 
         # Deal with tied coordinates here across components:
         # TODO(adrn): duplicated code
         component_dists: dict[str, dict[CoordinateName, dist.Distribution]] = {}
-        overrides: dict[str, dict] = {}
+        dists: dict[str, dict] = {}
         for component_name in self._tied_order:
             tied_map = self.tied_coordinates.get(component_name, {})
 
-            overrides[component_name] = {
+            dists[component_name] = {
                 override_coord: component_dists[dep][override_coord]
                 for override_coord, dep in tied_map.items()
             }
@@ -862,18 +937,18 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 component_name
             ].make_dists(
                 pars=expanded_pars[component_name],
-                overrides=overrides.get(component_name, {}),
+                dists=dists.get(component_name, {}),
             )
 
         terms: dict[str, list[jax.Array]] = {}
         for component in self.components:
-            # TODO: need an overrides here too, but damn that interface sucks
+            # TODO: need to override dists here too, but damn that interface sucks
             all_grids, component_terms = component.evaluate_on_2d_grids(
                 pars=expanded_pars[component.name],
                 grids=grids,
                 grid_coord_names=grid_coord_names,
                 x_coord_name=x_coord_name,
-                overrides=overrides.get(component.name, {}),
+                dists=dists.get(component.name, {}),
             )
             for k, v in component_terms.items():
                 if k not in terms:

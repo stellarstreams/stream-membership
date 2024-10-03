@@ -77,6 +77,12 @@ class IndependentGMM(dist.MixtureSameFamily):
     def mixture_dim(self):
         return -1
 
+    @property
+    def support(self):
+        if self.component_distribution.support is not None:
+            return self.component_distribution.support
+        return dist.constraints.real
+
     def component_log_probs(self, value: ArrayLike) -> jax.Array:
         value = jnp.array(value)
         value = jnp.atleast_2d(value.T).T
@@ -107,7 +113,7 @@ class IndependentGMM(dist.MixtureSameFamily):
         )
 
     def component_sample(
-        self, key: jax.random.PRNGKey, sample_shape: tuple = ()
+        self, key: jax._src.random.KeyArray, sample_shape: tuple = ()
     ) -> jax.Array:
         return self.component_distribution.sample(
             key,
