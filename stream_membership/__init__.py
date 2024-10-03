@@ -1,4 +1,3 @@
-from .model import StreamMixtureModel, StreamModel  # noqa
-from .variables import *  # noqa
+from .model import *  # noqa: F403
 
 VERSION = "v0.1"
