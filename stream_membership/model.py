@@ -339,7 +339,9 @@ class ModelComponent(eqx.Module, ModelMixin):
 
         return packed_pars
 
-    def expand_numpyro_params(self, pars: dict[str, Any]) -> dict[str | tuple, Any]:
+    def expand_numpyro_params(
+        self, pars: dict[str, Any], skip_invalid: bool = False
+    ) -> dict[str | tuple, Any]:
         """
         Convert a dictionary of numpyro parameters into a nested dictionary where the
         keys are the coordinate names and parameter name.
@@ -352,7 +354,13 @@ class ModelComponent(eqx.Module, ModelMixin):
         """
         expanded_pars: dict[str, dict] = {}
         for k, v in pars.items():
-            name, coord_name, arg_name = self._expand_numpyro_name(k)
+            try:
+                name, coord_name, arg_name = self._expand_numpyro_name(k)
+            except Exception as e:
+                if not skip_invalid:
+                    raise e
+                continue
+
             if name not in expanded_pars:
                 expanded_pars[name] = {}
             if coord_name not in expanded_pars[name]:
@@ -486,7 +494,9 @@ class ModelComponent(eqx.Module, ModelMixin):
 
             numpyro_name = self._make_numpyro_name(coord_name)
             if _data_err is not None:
-                model_val = numpyro.sample(numpyro_name, dist_)
+                model_val = numpyro.sample(
+                    numpyro_name, dist_, sample_shape=(_data.shape[0],)
+                )
                 numpyro.sample(
                     f"{numpyro_name}-obs",
                     dist.Normal(model_val, _data_err),
@@ -792,19 +802,12 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
 
         return tied_order
 
-    def __call__(
-        self, data: dict[str, ArrayLike], err: dict[str, ArrayLike] | None = None
-    ) -> None:
-        """
-        This sets up the mixture model in numpyro.
-        """
-        from .distributions.stacked_component import _StackedModelComponent
-
-        probs = numpyro.sample("mixture-probs", self.mixing_probs)
+    def _make_stacked_components(self) -> dict[str, Any]:
+        from .distributions.stacked_component import _ConcatenatedModelComponent
 
         # Deal with tied coordinates here across components:
         # TODO(adrn): Duplicated code
-        _combined_components: dict[str, _StackedModelComponent] = {}
+        _combined_components: dict[str, _ConcatenatedModelComponent] = {}
         for component_name in self._tied_order:
             tied_map = self.tied_coordinates.get(component_name, {})
 
@@ -814,9 +817,24 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 ]
                 for override_coord, dep in tied_map.items()
             }
-            _combined_components[component_name] = _StackedModelComponent(
+            _combined_components[component_name] = _ConcatenatedModelComponent(
                 self._components[component_name], dists=dists
             )
+
+        return _combined_components
+
+    def __getitem__(self, key: str) -> ModelComponent:
+        return self._components[key]
+
+    def __call__(
+        self, data: dict[str, ArrayLike], err: dict[str, ArrayLike] | None = None
+    ) -> None:
+        """
+        This sets up the mixture model in numpyro.
+        """
+        probs = numpyro.sample("mixture-probs", self.mixing_probs)
+
+        _combined_components = self._make_stacked_components()
 
         # Here we make sure the order we pass in the components respects the original
         # order the user passed in, for interpretation of the probabilities:
@@ -829,6 +847,9 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         if err is None:
             numpyro.sample("mixture", mixture, obs=stacked_data)
         else:
+            # TODO: this is a crazy hack to make sure we have errors for all coordinates
+            # - should warn the user that this is happening...
+            err = {k: err.get(k, 1e-8) for k in data}
             model_data = numpyro.sample(
                 "mixture", mixture, sample_shape=(stacked_data.shape[0],)
             )
@@ -840,11 +861,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 # some validation time
                 size = 2 if isinstance(name, tuple) else 1
                 slc = slice(i, i + size)
-                model_data_dist = (
-                    dist.Normal(model_data[:, slc], err[name])
-                    if name in err
-                    else dist.Delta(model_data[:, slc])
-                )
+                model_data_dist = dist.Normal(model_data[:, slc], err[name])
                 numpyro.sample(f"{name}-obs", model_data_dist, obs=stacked_data[:, slc])
                 i += size
 
@@ -870,7 +887,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         return packed_pars
 
     def expand_numpyro_params(
-        self, pars: dict[str, Any]
+        self, pars: dict[str, Any], skip_invalid: bool = False
     ) -> dict[str, dict[CoordinateName, Any]]:
         """
         Convert a dictionary of numpyro parameters into a nested dictionary where the
@@ -893,7 +910,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 if key.startswith(f"{component.name}:"):
                     component_pars[key] = pars.pop(key)
             expanded_pars[component.name] = component.expand_numpyro_params(
-                component_pars
+                component_pars, skip_invalid=skip_invalid
             )
 
             # TODO(adrn): duplicated code

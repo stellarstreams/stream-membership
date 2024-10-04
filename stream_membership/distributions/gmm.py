@@ -79,6 +79,9 @@ class IndependentGMM(dist.MixtureSameFamily):
 
     @property
     def support(self):
+        # TODO: it's possible this is not correct. The component distribution support
+        # may not be a vector interval like it needs to be? Anyways, if we see issues
+        # with using this distribution, audit the support!
         if self.component_distribution.support is not None:
             return self.component_distribution.support
         return dist.constraints.real

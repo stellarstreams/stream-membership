@@ -1,43 +1,110 @@
-__all__ = ["_StackedModelComponent"]
+__all__ = ["_ConcatenatedModelComponent"]
 
 import jax
 import jax.numpy as jnp
 import numpyro.distributions as dist
 from jax.typing import ArrayLike
+from numpyro.distributions.constraints import Constraint
+from numpyro.distributions.transforms import Transform, biject_to
 
 from .._typing import CoordinateName
 from ..model import ModelComponent
 
 
-class vector_interval(dist.constraints.Constraint):
-    def __init__(self, lower_bounds: ArrayLike, upper_bounds: ArrayLike):
-        self.lower_bounds = jnp.array(lower_bounds)
-        self.upper_bounds = jnp.array(upper_bounds)
-        if self.lower_bounds.shape != self.upper_bounds.shape:
-            msg = "Lower and upper bounds must have the same shape."
-            raise ValueError(msg)
+class _IndependentConstraints(Constraint):
+    """
+    Wraps a constraint by aggregating over ``reinterpreted_batch_ndims``-many
+    dims in :meth:`check`, so that an event is valid only if all its
+    independent entries are valid.
+    """
 
-    def __call__(self, x):
-        return jnp.all((x > self.lower_bounds) & (x < self.upper_bounds), axis=-1)
+    def __init__(self, constraints):
+        for constraint in constraints:
+            assert isinstance(constraint, Constraint)
+        self.constraints = constraints
+        super().__init__()
 
-    def tree_flatten(self):
-        return (self.lower_bounds, self.upper_bounds), (
-            ("lower_bounds", "upper_bounds"),
-            {},
+    @property
+    def event_dim(self):
+        return self.constraints[0].event_dim + self.reinterpreted_batch_ndims
+
+    def __call__(self, value):
+        # NOTE: assumption that axis=-1 is the event dimension
+        # TODO: will this fail with a 2D like GMM combined with a 1D like Spline?
+        assert value.shape[-1] == len(self.constraints)
+        results = jnp.concatenate(
+            [
+                jnp.atleast_2d(constraint(value[..., i]))
+                for i, constraint in enumerate(self.constraints)
+            ],
+        )
+        return results.all(0)
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__[1:]}({len(self.constraints)} constraints, "
+            f"{self.reinterpreted_batch_ndims})"
         )
 
     def feasible_like(self, prototype):
-        values = (self.lower_bounds + self.upper_bounds) / 2
-        values[jnp.isinf(self.lower_bounds)] = self.upper_bounds[
-            jnp.isinf(self.lower_bounds)
-        ] + 2 * jnp.abs(self.upper_bounds[jnp.isinf(self.lower_bounds)])
-        values[jnp.isinf(self.upper_bounds)] = self.lower_bounds[
-            jnp.isinf(self.lower_bounds)
-        ] + 2 * jnp.abs(self.lower_bounds[jnp.isinf(self.lower_bounds)])
-        return jnp.broadcast_to(values, jax.numpy.shape(prototype))
+        return jnp.stack(
+            [constraint.feasible_like(prototype) for constraint in self.constraints], -1
+        )
+
+    def tree_flatten(self):
+        return (self.constraints,), (("constraints",),)
+
+    def __eq__(self, other):
+        if not isinstance(other, _IndependentConstraints):
+            return False
+
+        return all(
+            c1 == c2
+            for c1, c2 in zip(self.constraints, other.constraints, strict=False)
+        )
 
 
-class _StackedModelComponent(dist.Distribution):
+class ConcatenatedTransform(Transform):
+    def __init__(self, transforms: list[Transform]):
+        self.transforms = transforms
+
+    def __call__(self, x):
+        vals = []
+        # TODO: will this fail with a 2D like GMM combined with a 1D like Spline?
+        # Because then need to do, e.g., i:i+2 instead
+        for i, trans in enumerate(self.transforms):
+            vals.append(jnp.atleast_2d(trans(x[..., i])))
+        # return jnp.stack(vals, axis=-1)
+        return jnp.concatenate(vals).T
+
+    def _inverse(self, y):
+        vals = []
+        for i, trans in enumerate(self.transforms):
+            vals.append(jnp.atleast_2d(trans.inv(y[..., i])))
+        # return jnp.stack(vals, axis=-1)
+        return jnp.concatenate(vals).T
+
+    def tree_flatten(self):
+        return (self.transforms,), (("transforms",), {})
+
+    def log_abs_det_jacobian(self, x, y, intermediates=None):
+        # TODO: will this fail with a 2D like GMM combined with a 1D like Spline?
+        jacs = [
+            trans.log_abs_det_jacobian(
+                x[..., i : i + 1], y[..., i : i + 1], intermediates=intermediates
+            )
+            for i, trans in enumerate(self.transforms)
+        ]
+        return jnp.concatenate(jacs, axis=-1)
+
+
+@biject_to.register(_IndependentConstraints)
+def _transform_to_concatenated(constraint):
+    transforms = [biject_to(c) for c in constraint.constraints]
+    return ConcatenatedTransform(transforms)
+
+
+class _ConcatenatedModelComponent(dist.Distribution):
     # TODO: set event shape to correct value??
 
     def __init__(
@@ -58,26 +125,18 @@ class _StackedModelComponent(dist.Distribution):
         )
         self.pars = pars
         self._inputted_dists = dists
+
+        # TODO: at the end of the day, the way to have uncertainties in the model might
+        # be to add a mechanism to "inject" stddev into the relevant component
+        # distributions here...
         self._model_component_dists = self.model_component.make_dists(
             pars, self._inputted_dists
         )
 
-        # Set up the support
-        lows = []
-        highs = []
-        for dist_ in self._model_component_dists.values():
-            low = jnp.atleast_1d(
-                jnp.squeeze(getattr(dist_.support, "lower_bound", -jnp.inf))
-            )
-            high = jnp.atleast_1d(
-                jnp.squeeze(getattr(dist_.support, "upper_bound", jnp.inf))
-            )
-            low, high = jnp.broadcast_arrays(low, high)
-            lows.append(low)
-            highs.append(high)
-        lower = jnp.concatenate(lows)
-        upper = jnp.concatenate(highs)
-        self._support = vector_interval(lower, upper)
+        # Set up the distribution support
+        self._support = _IndependentConstraints(
+            [dist_.support for dist_ in self._model_component_dists.values()]
+        )
 
     @property
     def support(self):
