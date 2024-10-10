@@ -10,7 +10,11 @@ Welcome to stream-membership's documentation!
    :maxdepth: 2
    :caption: Contents:
 
-
+   introduction
+   install
+   model
+   plot
+   api
 
 Indices and tables
 ==================

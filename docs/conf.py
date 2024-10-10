@@ -6,6 +6,12 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import sys
+from pathlib import Path
+
+import os
+sys.path.insert(0, os.path.abspath('../'))
+
 project = 'stream-membership'
 copyright = '2024, Adrian Price-Whelan, Kiyan Tavangar'
 author = 'Adrian Price-Whelan, Kiyan Tavangar'
@@ -20,6 +26,7 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.extlinks',
     'sphinx.ext.intersphinx',
+    'sphinx.ext.napoleon',  # For Google and NumPy style docstrings
     'sphinx.ext.viewcode',
     'sphinx.ext.inheritance_diagram',
     'sphinx.ext.coverage',
@@ -36,3 +43,5 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = 'alabaster'
 html_static_path = ['_static']
+
+autosummary_generate = True  # Enable autosummary

@@ -10,13 +10,26 @@ Go within the cloned `stream-membership` directory: `cd stream-membership`
 Build and install the project using pip: `python -m pip install .`
 
 ## Python Dependencies
-- numpy>=1.22
-- astropy>=5
-- scipy>=1.8
-- packaging
-- jax
-- jaxlib
-- jax_cosmo
-- numpyro
-- numpyro_ext
-- jax_ext @ git+https://github.com/adrn/jax-ext
+* numpy>=1.22
+
+* astropy>=5
+
+* scipy>=1.8
+
+* packaging
+
+* jax
+
+* jaxlib
+
+* jax_cosmo
+
+* numpyro
+
+* numpyro_ext
+
+* equinox
+
+* matplotliib
+
+* jax_ext @ git+https://github.com/adrn/jax-ext
