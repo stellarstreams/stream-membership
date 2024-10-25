@@ -26,15 +26,16 @@ dependencies = [
     "packaging",
     "jax",
     "jaxlib",
-    "jax_cosmo",
+    "jax_cosmo",  # TODO: use interpax instead?
     "numpyro",
     "numpyro_ext",
+    "equinox",
     "jax_ext @ git+https://github.com/adrn/jax-ext"
 ]
 
 [tool.hatch]
 version.source = "vcs"
-build.hooks.vcs.version-file = "stream_membership/_version.py"
+build.hooks.vcs.version-file = "src/stream_membership/_version.py"
 
 [tool.hatch.env.default]
 features = ["test"]
