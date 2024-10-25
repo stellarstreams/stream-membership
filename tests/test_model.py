@@ -7,9 +7,12 @@ from numpyro.infer import SVI, Predictive, Trace_ELBO
 from numpyro.infer.autoguide import AutoDelta
 from scipy.interpolate import InterpolatedUnivariateSpline
 
-from ..gmm import IndependentGMM
-from ..model import ModelComponent
-from ..numpyro_dist import NormalSpline, TruncatedNormalSpline
+from stream_membership import ModelComponent
+from stream_membership.distributions import (
+    IndependentGMM,
+    NormalSpline,
+    TruncatedNormalSpline,
+)
 
 
 def test_subclass():
@@ -192,7 +195,7 @@ cond_data_expects = [
 
 
 @pytest.mark.parametrize(
-    ("cond_data", "expect"), zip(cond_data_cases, cond_data_expects)
+    ("cond_data", "expect"), zip(cond_data_cases, cond_data_expects, strict=False)
 )
 def test_sample_order(cond_data, expect):
     if expect is not None:

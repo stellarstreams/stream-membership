@@ -3,7 +3,7 @@ import numpy as np
 import numpyro.distributions as dist
 import pytest
 
-from ..gmm import IndependentGMM
+from stream_membership.distributions.gmm import IndependentGMM
 
 
 @pytest.mark.parametrize(

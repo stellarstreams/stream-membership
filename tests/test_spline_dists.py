@@ -3,7 +3,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from .. import DirichletSpline, NormalSpline, TruncatedNormalSpline
+from stream_membership.distributions import (
+    DirichletSpline,
+    NormalSpline,
+    TruncatedNormalSpline,
+)
 
 
 def make_dists(seed=867):
