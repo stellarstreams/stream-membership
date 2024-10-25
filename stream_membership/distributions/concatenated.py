@@ -67,13 +67,15 @@ class ConcatenatedDistributions(dist.Distribution):
 
         all_samples = []
         for key_, dist_ in zip(keys, self._dists, strict=True):
-            all_samples.append(
-                jnp.atleast_1d(dist_.sample(key_, sample_shape=sample_shape))
-            )
+            samples = jnp.atleast_1d(dist_.sample(key_, sample_shape=sample_shape))
+            if sample_shape == ():
+                samples = atleast_2d(samples, axis=0)
 
-        max_ndim = max(len(s.shape) for s in all_samples)
+            all_samples.append(samples)
+
+        max_ndim = len(sample_shape) + 1
         all_samples = [
-            jnp.expand_dims(s, -1) if len(s.shape) != max_ndim else s
+            jnp.expand_dims(s, -1) if len(s.shape) < max_ndim else s
             for s in all_samples
         ]
-        return jnp.concatenate(all_samples, axis=-1)
+        return jnp.concatenate(all_samples, axis=-1).reshape((*sample_shape, -1))

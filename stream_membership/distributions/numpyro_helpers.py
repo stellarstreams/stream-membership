@@ -16,7 +16,6 @@ class ConcatenatedConstraints(Constraint):
         constraints: list[Constraint],
         sizes: list[int] | None = None,
     ):
-        print("constraints", constraints)
         # TODO: validate event dims are the same?
 
         self.constraints = constraints
