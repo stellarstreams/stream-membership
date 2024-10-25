@@ -5,7 +5,11 @@ import pytest
 from numpyro import distributions as dist
 from numpyro.infer import Predictive
 
-from stream_membership.distributions.concatenated import ConcatenatedDistributions
+from stream_membership.distributions.concatenated import (
+    ConcatenatedConstraints,
+    ConcatenatedDistributions,
+    _transform_to_concatenated,
+)
 
 values_expected_shape = [
     (jnp.array([0, 1, 2.0]), 1),
@@ -62,3 +66,49 @@ class TestUnivariateMultivariate(BaseTestConcatenated):
             covariance_matrix=jnp.array([[1.0, 0.0], [0, 0.5]]) ** 2,
         )
         return ConcatenatedDistributions([x1, x2])
+
+
+class TestConstraintsTransform:
+    def setup_constraints(self):
+        c1 = dist.constraints.positive
+        c2 = dist.constraints.real
+        c3 = dist.constraints.interval(0, 1)
+        c4 = dist.constraints.interval(jnp.array([0.0, 2.0]), jnp.array([1.0, 100.0]))
+        return ConcatenatedConstraints([c1, c2, c3, c4], sizes=[1, 2, 1, 2])
+
+    def test_constraints(self):
+        c = self.setup_constraints()
+
+        test_data = jnp.full(6, 0.5)
+        assert not c(test_data)
+
+        test_data = jnp.array([1.0, 0.0, 0.0, 0.5, 1.0, 10.0])
+        assert c(test_data)
+
+        test_data = jnp.array(
+            [
+                [1.0, 0.0, 0.0, 0.5, 1.0, 10.0],
+                [-1.0, 0.0, 0.0, 0.5, 1.0, 10.0],
+            ]
+        )
+        assert all(c(test_data) == jnp.array([True, False]))
+
+    def test_transforms(self):
+        c = self.setup_constraints()
+        trans = _transform_to_concatenated(c)
+
+        test_data = jnp.full(6, 0.5)
+        assert trans(test_data).shape == test_data.shape
+        assert jnp.allclose(test_data, trans.inv(trans(test_data)))
+
+        test_data = jnp.array(
+            [
+                [1.0, 0.0, 0.0, 0.5, 1.0, 10.0],
+                [-1.0, 0.0, 0.0, 0.5, 1.0, 10.0],
+            ]
+        )
+        assert trans(test_data).shape == test_data.shape
+        with jax.experimental.enable_x64():
+            assert jnp.allclose(
+                test_data, trans.inv(trans(jnp.array(test_data, dtype=jnp.float64)))
+            )
