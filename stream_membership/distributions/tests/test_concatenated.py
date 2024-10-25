@@ -25,7 +25,7 @@ class BaseTestConcatenated:
         x = self.setup_dist()
         assert x.event_shape == (3,)
 
-    @pytest.mark.parametrize("value, expected_shape", values_expected_shape)
+    @pytest.mark.parametrize(("value", "expected_shape"), values_expected_shape)
     def test_logprob(self, value, expected_shape):
         x = self.setup_dist()
         assert x.log_prob(value).shape == (expected_shape,)
