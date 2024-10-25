@@ -1,8 +1,6 @@
 Creating Models
 ===============
 
-Introduction
-------------
 This module contains the classes from which all models will be created. The models are used to recreate different stream components.
 Most of the models are spline-based and track stream or background properties (:math:`\phi_2, \mu_{\phi_1}, \mu_{\phi_2}`), as a function of :math:`\phi_1$`.
 
