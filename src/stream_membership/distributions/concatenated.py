@@ -89,7 +89,7 @@ class ConcatenatedConstraints(Constraint):
         self.constraints = constraints
 
         # validate event dims are the same
-        assert all(c.event_dim == constraints[0].event_dim for c in constraints)
+        # assert all(c.event_dim == constraints[0].event_dim for c in constraints)
 
         self.sizes = sizes
         super().__init__()

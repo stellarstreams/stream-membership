@@ -25,7 +25,7 @@ class BaseTestConcatenated:
         x3 = dist.Normal(1.0, 0.25)
         return ConcatenatedDistributions([x1, x2, x3])
 
-    def test_univ_shape(self):
+    def test_shape(self):
         x = self.setup_dist()
         assert x.event_shape == (3,)
 
@@ -66,6 +66,14 @@ class TestUnivariateMultivariate(BaseTestConcatenated):
             covariance_matrix=jnp.array([[1.0, 0.0], [0, 0.5]]) ** 2,
         )
         return ConcatenatedDistributions([x1, x2])
+
+
+class TestMixture(BaseTestConcatenated):
+    def setup_dist(self):
+        dist1 = TestAllUnivariate().setup_dist()
+        dist2 = TestUnivariateMultivariate().setup_dist()
+        mix = dist.CategoricalProbs(jnp.array([0.5, 0.5]))
+        return dist.MixtureGeneral(mix, [dist1, dist2])
 
 
 class TestConstraintsTransform:
