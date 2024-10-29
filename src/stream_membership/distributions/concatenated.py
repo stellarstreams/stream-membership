@@ -26,7 +26,7 @@ class ConcatenatedDistributions(dist.Distribution):
         )
 
         super().__init__(
-            batch_shape=(),
+            batch_shape=jnp.broadcast_shapes(*[dist_.batch_shape for dist_ in dists]),
             event_shape=(sum(self._sizes),),
         )
 
@@ -46,6 +46,7 @@ class ConcatenatedDistributions(dist.Distribution):
 
         i = 0
         for dist_, size in zip(self._dists, self._sizes, strict=True):
+            # TODO: if batch_shape, need to handle this differently?
             lps.append(atleast_2d(dist_.log_prob(value[..., i : i + size]), axis=-1))
             i += size
 
@@ -58,24 +59,33 @@ class ConcatenatedDistributions(dist.Distribution):
     def sample(
         self,
         key: jax._src.random.KeyArray,
-        sample_shape: tuple = (),
+        sample_shape: tuple | None = None,
     ) -> jax.Array:
-        """Sample from the concatenated distribution."""
+        """Sample from the concatenated distribution.
+
+        Note: Unlike in numpyro, not passing in a `sample_shape` may result in returning
+        more than one sample. If one of the component distributions has a batch shape,
+        this will result in a batch of samples. For example, if using any of the spline
+        conditional distributions (e.g., `NormalSpline`), the returned sample shape will
+        correspond to the shape of `x` in the spline conditional distribution.
+        """
         keys = jax.random.split(key, len(self._dists))
 
-        all_samples = []
-        for key_, dist_ in zip(keys, self._dists, strict=True):
-            samples = jnp.atleast_1d(dist_.sample(key_, sample_shape=sample_shape))
-            if sample_shape == ():
-                samples = atleast_2d(samples, axis=0)
+        sample_shape = (
+            self.batch_shape
+            if sample_shape is None or sample_shape == ()
+            else (*sample_shape, *self.batch_shape)
+        )
+        final_shapes = [(*sample_shape, size) for size in self._sizes]
 
+        all_samples = []
+        for key_, dist_, shape in zip(keys, self._dists, final_shapes, strict=True):
+            this_sample_shape = (
+                sample_shape if dist_.batch_shape == () else sample_shape[:-1]
+            )
+            samples = dist_.sample(key_, sample_shape=this_sample_shape).reshape(shape)
             all_samples.append(samples)
 
-        max_ndim = len(sample_shape) + 1
-        all_samples = [
-            jnp.expand_dims(s, -1) if len(s.shape) < max_ndim else s
-            for s in all_samples
-        ]
         return jnp.concatenate(all_samples, axis=-1).reshape((*sample_shape, -1))
 
 

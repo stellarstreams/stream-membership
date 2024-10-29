@@ -47,8 +47,8 @@ class NormalSpline(dist.Distribution):
             "loc" and "scale" specifying the degrees of the loc and scale splines
             respectively.
         """
-        # TODO: or batch over the dimensionality of the input data (x)?
-        super().__init__(batch_shape=(), event_shape=())
+        x = jnp.asarray(x)
+        super().__init__(batch_shape=x.shape, event_shape=())
 
         self.knots = jnp.array(knots)
         self.clip_locs = tuple(clip_locs)
@@ -57,7 +57,7 @@ class NormalSpline(dist.Distribution):
         if not isinstance(spline_k, dict):
             spline_k = {"loc": spline_k, "scale": spline_k}
         self.spline_k = spline_k
-        self.x = jnp.array(x)
+        self.x = x
         self.loc_vals = jnp.array(loc_vals)
         self.scale_vals = jnp.array(scale_vals)
 
