@@ -7,7 +7,7 @@ from jax.typing import ArrayLike
 from numpyro.distributions.constraints import Constraint
 from numpyro.distributions.transforms import Transform, biject_to
 
-from stream_membership.utils import atleast_2d, slice_along_axis
+from stream_membership.utils import slice_along_axis
 
 
 class ConcatenatedDistributions(dist.Distribution):
@@ -40,14 +40,18 @@ class ConcatenatedDistributions(dist.Distribution):
         TODO: this currently ignores the conditional data needs. Do we need it, though?
         """
         value = jnp.asarray(value)
-        assert value.shape[-1] == self.event_shape[0]
+
+        expected_shape = (*self.batch_shape, sum(self._sizes))
+        assert value.shape == expected_shape
 
         lps = []
 
         i = 0
         for dist_, size in zip(self._dists, self._sizes, strict=True):
             # TODO: if batch_shape, need to handle this differently?
-            lps.append(atleast_2d(dist_.log_prob(value[..., i : i + size]), axis=-1))
+            shape = (*self.batch_shape, size) if size > 1 else self.batch_shape
+            lp = dist_.log_prob(value[..., i : i + size].reshape(shape))
+            lps.append(lp.reshape((*shape, size)))
             i += size
 
         return jnp.concatenate(lps, axis=-1)
