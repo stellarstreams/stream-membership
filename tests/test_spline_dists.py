@@ -21,15 +21,33 @@ def make_dists(seed=867):
     d = NormalSpline(
         knots=knots,
         loc_vals=rng.uniform(-5, 5, knots.size),
-        ln_scale_vals=rng.uniform(-1, 1, knots.size),
+        scale_vals=np.ones(knots.size),
         x=x,
+    )
+    dists.append(d)
+
+    d = NormalSpline(
+        knots=knots,
+        loc_vals=rng.uniform(-5, 5, knots.size),
+        scale_vals=rng.uniform(0.2, 1, knots.size),
+        x=x,
+        clip_scales=(0.1, 10.0),
+    )
+    dists.append(d)
+
+    d = NormalSpline(
+        knots=knots,
+        loc_vals=rng.uniform(-5, 5, knots.size),
+        scale_vals=rng.uniform(0.2, 1, knots.size),
+        x=x,
+        clip_scales=(0.1, None),
     )
     dists.append(d)
 
     d = TruncatedNormalSpline(
         knots=knots,
         loc_vals=rng.uniform(-5, 5, knots.size),
-        ln_scale_vals=rng.uniform(-1, 1, knots.size),
+        scale_vals=np.ones(knots.size),
         low=-4.0,
         high=4.0,
         x=x,
@@ -44,7 +62,10 @@ def make_dists(seed=867):
     return dists
 
 
-@pytest.mark.parametrize("dist_", make_dists())
+test_dists = make_dists()
+
+
+@pytest.mark.parametrize("dist_", test_dists)
 def test_methods(dist_):
     # New x grid to be used below:
     x2 = jnp.linspace(1, 8, 64)

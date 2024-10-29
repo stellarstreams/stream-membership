@@ -47,7 +47,7 @@ class NormalSpline(dist.Distribution):
             "loc" and "scale" specifying the degrees of the loc and scale splines
             respectively.
         """
-
+        # TODO: or batch over the dimensionality of the input data (x)?
         super().__init__(batch_shape=(), event_shape=())
 
         self.knots = jnp.array(knots)
