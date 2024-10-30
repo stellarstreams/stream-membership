@@ -92,3 +92,6 @@ def test_methods(dist_):
     y2 = np.linspace(0, 1, np.prod(shape)).reshape(shape)
     lp = dist_.log_prob(y2, x=x2)
     assert lp.shape == x2.shape
+
+
+# TODO: test that evaluating spline log_prob with an extra event_dim is ignored...?

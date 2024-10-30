@@ -48,10 +48,9 @@ class ConcatenatedDistributions(dist.Distribution):
 
         i = 0
         for dist_, size in zip(self._dists, self._sizes, strict=True):
-            # TODO: if batch_shape, need to handle this differently?
             shape = (*self.batch_shape, size) if size > 1 else self.batch_shape
             lp = dist_.log_prob(value[..., i : i + size].reshape(shape))
-            lps.append(lp.reshape((*shape, size)))
+            lps.append(lp.reshape((*self.batch_shape, 1)))
             i += size
 
         return jnp.concatenate(lps, axis=-1)

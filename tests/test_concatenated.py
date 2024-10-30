@@ -66,10 +66,10 @@ class TestUnivariateMultivariate(BaseTestConcatenated):
         return ConcatenatedDistributions([x1, x2])
 
 
-class TestUnivariateSpline(BaseTestConcatenated):
+class TestUnivariateSpline:
     x = jnp.arange(0, 10.0, 1.0)
     values_expected_shape = (
-        (jax.random.normal(jax.random.PRNGKey(111), (x.size, 3)), x.shape),
+        (jax.random.normal(jax.random.PRNGKey(111), (x.size, 5)), x.shape),
     )
     sample_shapes = ((), (1,), (4,))
 
@@ -82,7 +82,15 @@ class TestUnivariateSpline(BaseTestConcatenated):
             x=self.x,
         )
         x3 = dist.Uniform(0, 1)
-        return ConcatenatedDistributions([x1, x2, x3])
+        x4 = dist.MultivariateNormal(
+            loc=jnp.array([1.0, 2.0]),
+            covariance_matrix=jnp.array([[1.0, 0.6], [0.6, 0.5]]) ** 2,
+        )
+        return ConcatenatedDistributions([x1, x2, x3, x4])
+
+    def test_shape(self):
+        x = self.setup_dist()
+        assert x.event_shape == (5,)
 
     @pytest.mark.parametrize(("value", "expected_shape"), values_expected_shape)
     def test_logprob(self, value, expected_shape):
@@ -94,7 +102,7 @@ class TestUnivariateSpline(BaseTestConcatenated):
         x = self.setup_dist()
 
         samples = x.sample(jax.random.PRNGKey(0), sample_shape=sample_shape)
-        assert samples.shape == (*sample_shape, self.x.size, 3)
+        assert samples.shape == (*sample_shape, self.x.size, 5)
 
     @pytest.mark.xfail
     def test_numpyro_predictive(self):
@@ -104,7 +112,7 @@ class TestUnivariateSpline(BaseTestConcatenated):
             numpyro.sample("x", x)
 
         pred = Predictive(model, batch_ndims=1, num_samples=1)(jax.random.PRNGKey(42))
-        assert pred["x"].shape == (self.x.size, 3)
+        assert pred["x"].shape == (self.x.size, 5)
 
 
 class TestMixture(BaseTestConcatenated):
