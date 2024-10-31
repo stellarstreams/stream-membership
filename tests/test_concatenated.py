@@ -15,7 +15,7 @@ from stream_membership.distributions.concatenated import (
 
 class BaseTestConcatenated:
     values_expected_shape: tuple[tuple[jax.Array, tuple], ...] = (
-        (jnp.array([0, 1, 2.0]), (1,)),
+        (jnp.array([0, 1, 2.0]), ()),
         (jnp.array([[0.0, 1, 2.0], [1.0, 2, 3.0], [2.0, 3, 4.0]]), (3,)),
     )
     sample_shapes = ((), (1,), (4,), (4, 5))

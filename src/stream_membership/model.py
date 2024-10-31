@@ -1,6 +1,7 @@
 __all__ = ["ModelComponent", "ComponentMixtureModel"]
 
 import copy
+from collections import defaultdict
 from itertools import chain
 from typing import Any
 
@@ -14,6 +15,8 @@ import numpyro.distributions as dist
 from jax.typing import ArrayLike
 from jax_ext.integrate import ln_simpson
 from numpyro.handlers import seed
+
+from stream_membership.distributions import ConcatenatedDistributions
 
 from ._typing import CoordinateName
 from .plot import _plot_projections
@@ -494,8 +497,9 @@ class ModelComponent(eqx.Module, ModelMixin):
 
             numpyro_name = self._make_numpyro_name(coord_name)
             if _data_err is not None:
+                sample_shape = (_data.shape[0],) if dist_.batch_shape == () else ()
                 model_val = numpyro.sample(
-                    numpyro_name, dist_, sample_shape=(_data.shape[0],)
+                    numpyro_name, dist_, sample_shape=sample_shape
                 )
                 numpyro.sample(
                     f"{numpyro_name}-obs",
@@ -802,26 +806,31 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
 
         return tied_order
 
-    def _make_stacked_components(self) -> dict[str, Any]:
-        from .distributions.stacked_component import _ConcatenatedModelComponent
-
+    def _make_concatenated(self) -> dict[str, Any]:
         # Deal with tied coordinates here across components:
-        # TODO(adrn): Duplicated code
-        _combined_components: dict[str, _ConcatenatedModelComponent] = {}
+        concatenated: dict[str, ConcatenatedDistributions] = {}
+
+        # TODO: figure out batch shape and event shape based on all components, and pass
+        # that in to the ConcatenatedDistributions so that all concatenated have the
+        # same shape expectations!
+
+        all_dists: dict[str, dict[str, dist.Distribution]] = defaultdict(dict)
         for component_name in self._tied_order:
+            component = self._components[component_name]
             tied_map = self.tied_coordinates.get(component_name, {})
 
-            dists = {
-                override_coord: _combined_components[dep]._model_component_dists[
-                    override_coord
-                ]
+            # TODO: ._dists is a list now, so this won't work...
+            override_dists = {
+                override_coord: all_dists[dep][override_coord]
                 for override_coord, dep in tied_map.items()
             }
-            _combined_components[component_name] = _ConcatenatedModelComponent(
-                self._components[component_name], dists=dists
+            dists = component.make_dists(dists=override_dists)
+            concatenated[component_name] = ConcatenatedDistributions(
+                dists=list(dists.values())
             )
+            all_dists[component_name] = dists
 
-        return _combined_components
+        return concatenated
 
     def __getitem__(self, key: str) -> ModelComponent:
         return self._components[key]
@@ -834,25 +843,24 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         """
         probs = numpyro.sample("mixture-probs", self.mixing_probs)
 
-        _combined_components = self._make_stacked_components()
+        concatenated = self._make_concatenated()
 
         # Here we make sure the order we pass in the components respects the original
         # order the user passed in, for interpretation of the probabilities:
         mixture = dist.MixtureGeneral(
             dist.Categorical(probs),
-            [_combined_components[name] for name in self.component_names],
+            [concatenated[name] for name in self.component_names],
         )
 
         stacked_data = jnp.stack([data[k] for k in self.coord_names], axis=-1)
         if err is None:
             numpyro.sample("mixture", mixture, obs=stacked_data)
         else:
-            # TODO: this is a crazy hack to make sure we have errors for all coordinates
-            # - should warn the user that this is happening...
+            # TODO: this is a hack to make sure we have errors for all coordinates
+            # NOTE: we should warn the user that this is happening...
             err = {k: err.get(k, 1e-8) for k in data}
-            model_data = numpyro.sample(
-                "mixture", mixture, sample_shape=(stacked_data.shape[0],)
-            )
+            sample_shape = (stacked_data.shape[0],) if mixture.batch_shape == () else ()
+            model_data = numpyro.sample("mixture", mixture, sample_shape=sample_shape)
 
             i = 0
             for name in self.coord_names:

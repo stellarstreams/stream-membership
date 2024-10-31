@@ -41,16 +41,19 @@ class ConcatenatedDistributions(dist.Distribution):
         """
         value = jnp.asarray(value)
 
-        expected_shape = (*self.batch_shape, sum(self._sizes))
-        assert value.shape == expected_shape
+        # TODO: maybe need better logic here
+        pre_shape = self.batch_shape if self.batch_shape != () else value.shape[:-1]
 
         lps = []
 
         i = 0
         for dist_, size in zip(self._dists, self._sizes, strict=True):
-            shape = (*self.batch_shape, size) if size > 1 else self.batch_shape
-            lp = dist_.log_prob(value[..., i : i + size].reshape(shape))
-            lps.append(lp.reshape((*self.batch_shape, 1)))
+            this_value = value[..., i : i + size]
+            shape = (*pre_shape, size) if size > 1 else pre_shape
+            # TODO: add a test of a mixture model of one concatenate with a spline one
+            # without spline
+            lp = dist_.log_prob(this_value.reshape(shape))
+            lps.append(lp.reshape((*pre_shape, 1)))
             i += size
 
         return jnp.concatenate(lps, axis=-1)
