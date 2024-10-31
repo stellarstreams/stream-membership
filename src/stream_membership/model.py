@@ -214,18 +214,57 @@ class ModelMixin:
         )
 
 
+@jax.tree_util.register_pytree_node_class
+class CoordinateMapping(dict):
+    """Note: This is needed because we use a mix of tuples and strings as keys in the
+    field dictionaries in ModelComponent below.
+    See: https://github.com/jax-ml/jax/issues/15358
+
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def tree_flatten(self):
+        sorted_keys = sorted(
+            self.keys(), key=lambda k: k[0] if isinstance(k, tuple) else k
+        )
+        return (tuple(self[k] for k in sorted_keys), sorted_keys)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        tmp = cls()
+        for k, v in zip(aux_data, children, strict=True):
+            tmp[k] = v
+        return tmp
+
+
 class ModelComponent(eqx.Module, ModelMixin):
     name: str
-    coord_distributions: dict[str | tuple, Any]
+    coord_distributions: dict[CoordinateName, Any]
     coord_parameters: dict[
-        str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]
+        CoordinateName, dict[str, dist.Distribution | tuple | ArrayLike | dict]
     ]
     default_x_coord: str | None = None
     conditional_data: dict[CoordinateName, dict[str, str]] = eqx.field(default=None)
     _coord_names: list[str] = eqx.field(init=False)
     _sample_order: list[CoordinateName] = eqx.field(init=False)
 
-    def __post_init__(self):
+    def __init__(
+        self,
+        name,
+        coord_distributions,
+        coord_parameters,
+        default_x_coord=None,
+        conditional_data=None,
+    ):
+        self.name = name
+        self.coord_distributions = CoordinateMapping(coord_distributions)
+        self.coord_parameters = CoordinateMapping(coord_parameters)
+        self.default_x_coord = default_x_coord
+        self.conditional_data = conditional_data
+
+        # def __post_init__(self):
         # Validate that the keys (i.e. coordinate names) in coord_distributions and
         # coord_parameters are the same
         if set(self.coord_distributions.keys()) != set(self.coord_parameters.keys()):
