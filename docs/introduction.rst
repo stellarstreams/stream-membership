@@ -1,4 +1,4 @@
-Introduction
+Overview
 ============
 
 Welcome to ``stream-membership``, an empirical modeling package for stellar streams!

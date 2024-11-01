@@ -6,19 +6,22 @@
 Welcome to stream-membership's documentation!
 =============================================
 
+Welcome to ``stream-membership``, an empirical modeling package for stellar streams!
+
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Contents:
 
    introduction
    install
    model
+   dists
    plot
    api
 
 Indices and tables
 ==================
 
-* :ref:`genindex`
-* :ref:`modindex`
 * :ref:`search`
+* :ref:`modindex`
+* :ref:`genindex`
