@@ -1,26 +1,26 @@
 ---
 title: 'stream-membership: A Python package for empirical density modeling of stellar streams'
 tags:
- - Python
- - astronomy
- - galactic dynamics
- - milky way
- - stellar streams
+  - Python
+  - astronomy
+  - galactic dynamics
+  - milky way
+  - stellar streams
 authors:
- - name: Adrian M. Price-Whelan
+  - name: Adrian M. Price-Whelan
     orcid: 0000-0003-0872-7098
     affiliation: "1"
     equal-contrib: true
- - name: Kiyan Tavangar
+  - name: Kiyan Tavangar
     orcid: 0000-0001-6584-6144
     affiliation: "2"
     equal-contrib: true
     corresponding: true # is this ok?
 affiliations:
- - index: 1
+  - index: 1
     name: Center for Computational Astrophysics, Flatiron Institute, USA
     ror: 00sekdz59
- - index: 2
+  - index: 2
     name: Columbia University, USA
     ror: 00hj8s172
 date: 31 October 2024
