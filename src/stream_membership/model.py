@@ -223,16 +223,16 @@ class ModelComponent(eqx.Module, ModelMixin):
     :type name: str
 
     :param coord_distributions:
-        a dictionary of the distributions of the component parameters. 
-        The keys are the names of the component parameters 
-        (e.g. `'phi1'`, `'phi2'`, `'mu_phi1'`, `'mu_phi2'`, `('phi1', 'phi2')`, etc.) 
+        a dictionary of the distributions of the component parameters.
+        The keys are the names of the component parameters
+        (e.g. `'phi1'`, `'phi2'`, `'mu_phi1'`, `'mu_phi2'`, `('phi1', 'phi2')`, etc.)
     :type coord_distributions: dict[str | tuple, Any]
 
     :param coord_parameters:
         a dictionary of the parameters of the distributions in `coord_distributions`.
-        The keys are the names of the component parameters (the keys in `coord_distributions`) 
+        The keys are the names of the component parameters (the keys in `coord_distributions`)
         and the values are dictionaries containing the parameters for the distributions.
-        For example, a truncated normal distribution (`dist.TruncatedNormal` in numpyro) 
+        For example, a truncated normal distribution (`dist.TruncatedNormal` in numpyro)
         might have the parameters loc, scale, low, and high.
     :type coord_parameters: dict[str | tuple, dict[str, dist.Distribution | tuple | ArrayLike | dict]]
 
@@ -244,9 +244,9 @@ class ModelComponent(eqx.Module, ModelMixin):
         (optional) a dictionary of any additional data that is required for evaluating the
         log-probability of a coordinate's probability distribution. For example, a
         spline-enabled distribution might require the phi1 data to evaluate the spline
-        at the phi1 values. 
+        at the phi1 values.
         The keys are the names of the component parameters
-        (e.g. `'phi1'`, `'phi2'`, `'mu_phi1'`, `'mu_phi2'`, `('phi1', 'phi2')`, etc.) 
+        (e.g. `'phi1'`, `'phi2'`, `'mu_phi1'`, `'mu_phi2'`, `('phi1', 'phi2')`, etc.)
         and the values are dictionaries of the conditional data for those parameters. default=None
     :type conditional_data: dict[CoordinateName, dict[str, str]]
 
@@ -268,7 +268,7 @@ class ModelComponent(eqx.Module, ModelMixin):
     conditional_data: dict[CoordinateName, dict[str, str]] = eqx.field(default=None)
     _coord_names: list[str] = eqx.field(init=False)
     _sample_order: list[CoordinateName] = eqx.field(init=False)
-    
+
     def __post_init__(self):
         # Validate that the keys (i.e. coordinate names) in coord_distributions and
         # coord_parameters are the same
@@ -744,15 +744,15 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
     """
     Creating a mixture model from multiple ModelComponent objects.
 
-    :param mixing_probs: 
+    :param mixing_probs:
         the distribution of the mixing probabilities for the components in the mixture model
     :type mixing_probs: dist.Dirichlet | ArrayLike
 
-    :param components: 
+    :param components:
         a list of the model components that make up the mixture model
     :type components: list[ModelComponent]
 
-    :param tied_coordinates: 
+    :param tied_coordinates:
         (optional) A dictionary of tied coordinates, where a key should be the name of a model
         component in the mixture, and the value should be a dictionary with keys as
         the names of the coordinates in the model component and values as the names
@@ -763,17 +763,17 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
     :type tied_coordinates: dict[str, dict[str, str]]
 
     :attr:`coord_names`
-        the names of the component parameters 
-        (the keys in `coord_distributions` and `coord_parameters` of each individual component). 
+        the names of the component parameters
+        (the keys in `coord_distributions` and `coord_parameters` of each individual component).
         Every component must have the same coordinate names so they can be combined
     :type coord_names: tuple[str]
 
-    :attr:`_tied_order`: 
+    :attr:`_tied_order`:
         Based on which coordinates are tied, the order in which the component distributions should be modeled.
         First, components with no dependencies are modeled, then components with dependencies are modeled.
     :type _tied_order: list[str]
 
-    :attr:`_components`: 
+    :attr:`_components`:
         a dictionary of the model components, where the keys are the names of the components and the values are the components themselves.
         This is just a restructuring of the input list of components into a dictionary for easier access.
     :type _components: dict[str, ModelComponent]
