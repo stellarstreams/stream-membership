@@ -468,7 +468,7 @@ class ModelComponent(eqx.Module, ModelMixin):
 
             dists[coord_name] = Distribution(**kwargs)
 
-        return dists
+        return {k: dists[k] for k in self.coord_distributions}
 
     def _make_conditional_data(
         self, data: dict[str, ArrayLike]
@@ -900,6 +900,11 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             err = {k: err.get(k, 1e-8) for k in data}
             sample_shape = (stacked_data.shape[0],) if mixture.batch_shape == () else ()
             model_data = numpyro.sample("mixture", mixture, sample_shape=sample_shape)
+
+            # TODO: something weird here. How are joint coordinates handled? coord_names
+            # I think it just the names of the coordinates, not the component names. So
+            # can they ever have size 2, as below? Maybe this isn't then the source of
+            # the issue...
 
             i = 0
             for name in self.coord_names:
