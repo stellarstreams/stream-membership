@@ -26,15 +26,16 @@ dependencies = [
     "packaging",
     "jax",
     "jaxlib",
-    "jax_cosmo",
+    "jax_cosmo",  # TODO: use interpax instead?
     "numpyro",
     "numpyro_ext",
+    "equinox",
     "jax_ext @ git+https://github.com/adrn/jax-ext"
 ]
 
 [tool.hatch]
 version.source = "vcs"
-build.hooks.vcs.version-file = "stream_membership/_version.py"
+build.hooks.vcs.version-file = "src/stream_membership/_version.py"
 
 [tool.hatch.env.default]
 features = ["test"]
@@ -46,17 +47,21 @@ local_scheme = "no-local-version"
 [tool.hatch.metadata]
 allow-direct-references = true
 
-# [tool.pytest.ini_options]
-# minversion = "6.0"
-# addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config"]
-# xfail_strict = true
-# filterwarnings = [
-#   "error",
-# ]
-# log_cli_level = "INFO"
-# testpaths = [
-#   "tests",
-# ]
+[tool.pytest.ini_options]
+  addopts = [
+    "--showlocals",
+    "--strict-config",
+    "--strict-markers",
+    "-ra",
+  ]
+  filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+  ]
+  log_cli_level = "INFO"
+  minversion = "6.0"
+  testpaths = ["docs", "src/", "tests/"]
+  xfail_strict = true
 
 # [tool.coverage]
 # run.source = ["pyia"]
@@ -66,9 +71,12 @@ allow-direct-references = true
 #   'if typing.TYPE_CHECKING:',
 # ]
 
-# NOTE: disable mypy type checks
-[tool.mypy]
-exclude =  ["stream_membership"]
+[[tool.mypy.overrides]]
+module = [
+  "numpyro.*",
+  "jax_cosmo.*"
+]
+ignore_missing_imports = true
 
 [tool.ruff]
 
@@ -100,6 +108,8 @@ ignore = [
   "PLR09",    # Too many <...>
   "PLR2004",  # Magic value used in comparison
   "ISC001",   # Conflicts with formatter
+  "F403",     # Can't detect from * import
+  "RET505",   # elif after return
 ]
 # Uncomment if using a _compat.typing backport
 # typing-modules = ["pyia._compat.typing"]
