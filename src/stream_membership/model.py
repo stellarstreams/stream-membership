@@ -995,9 +995,11 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
     ):
-        # TODO: should have a way to detect if pars are already expanded or not, to
-        # allow passing in packed or expanded parameter dictionary
-        expanded_pars = self.expand_numpyro_params(pars)
+        # Crude way of detecting if pars are already expanded or not:
+        if all(name in pars for name in self.component_names):
+            expanded_pars = pars
+        else:
+            expanded_pars = self.expand_numpyro_params(pars)
 
         # Deal with tied coordinates here across components:
         # TODO(adrn): duplicated code
