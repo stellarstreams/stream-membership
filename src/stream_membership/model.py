@@ -1,6 +1,7 @@
 __all__ = ["ModelComponent", "ComponentMixtureModel"]
 
 import copy
+from abc import abstractmethod
 from collections import defaultdict
 from itertools import chain
 from typing import Any
@@ -31,9 +32,9 @@ class ModelMixin:
 
     def _get_grids_2d(
         self,
-        grids_1d: list | tuple | ArrayLike,
+        grids_1d: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]],
-    ) -> dict[tuple[str, str], tuple[jax.Array, jax.Array]]:
+    ) -> dict[tuple[str, str], list[jax.Array]]:
         """
         Takes a dictionary of 1D grids and returns a dictionary of 2D grids for each
         pair of coordinates in grid_coord_names, which will be used to evaluate and plot
@@ -51,6 +52,14 @@ class ModelMixin:
             grids_2d[name_pair] = jnp.meshgrid(*[grids_1d[name] for name in name_pair])
 
         return grids_2d
+
+    @abstractmethod
+    def evaluate_on_2d_grids(
+        self, pars, grids, grid_coord_names, x_coord_name
+    ) -> tuple[
+        dict[tuple[str, str], list[jax.Array]], dict[tuple[str, str], jax.Array]
+    ]:
+        pass
 
     def plot_model_projections(
         self,
@@ -277,11 +286,11 @@ class ModelComponent(eqx.Module, ModelMixin):
                 self.default_x_coord = self.default_x_coord[0]
 
         self._coord_names = []
-        for name in self.coord_distributions:
-            if isinstance(name, tuple):
-                self._coord_names.extend(name)
+        for coord_name in self.coord_distributions:
+            if isinstance(coord_name, tuple):
+                self._coord_names.extend(coord_name)
             else:
-                self._coord_names.append(name)
+                self._coord_names.append(coord_name)
 
         # This is used to specify any extra data that is required for evaluating the
         # log-probability of a coordinate's probability distribution. For example, a
