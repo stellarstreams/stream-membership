@@ -1,0 +1,7 @@
+docutils.conf
+*.pdf
+*.log
+*.gz
+*.aux
+*.html
+*.tex

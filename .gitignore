@@ -4,10 +4,13 @@
 *.o
 *.so
 __pycache__
+.github
+paper/jats
+
 
 # Ignore .c files by default to avoid including generated code. If you want to
 # add a non-generated .c extension, use `git add -f filename.c`.
-*.c
+.c
 
 # Other generated files
 src/*/_version.py
@@ -59,3 +62,6 @@ pip-wheel-metadata/
 
 # Mac OSX
 .DS_Store
+
+#Virtual Environment Folder
+stream-env
