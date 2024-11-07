@@ -63,9 +63,9 @@ class ModelMixin:
 
     def plot_model_projections(
         self,
-	data: dict[str, Any] = None, # don't want this but need for N_data currently
         pars: dict[str, Any],
         grids: dict[str, ArrayLike],
+        data: dict[str, Any] = None, #for scaling to data when making data+model+residual plots
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
         axes: mpl_axes.Axes | None = None,
