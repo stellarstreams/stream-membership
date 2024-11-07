@@ -63,6 +63,7 @@ class ModelMixin:
 
     def plot_model_projections(
         self,
+        data: dict[str, Any], # don't want this but need for N_data currently
         pars: dict[str, Any],
         grids: dict[str, ArrayLike],
         grid_coord_names: list[tuple[str, str]] | None = None,
@@ -110,7 +111,19 @@ class ModelMixin:
             x_coord_name=x_coord_name,
         )
 
-        ims = {k: np.exp(v) for k, v in ln_ps.items()}
+        N_data = next(iter(data.values())).shape[0]
+
+        # Compute the bin area for each 2D grid cell for a cheap integral...
+        bin_area = {
+            k: np.abs(np.diff(grid1[0])[None] * np.diff(grid2[:, 0])[:, None])
+            for k, (grid1, grid2) in grids.items()
+        }
+
+        ln_ns = {
+            k: ln_p + np.log(N_data) + np.log(bin_area[k]) for k, ln_p in ln_ps.items()
+        }
+        ims = {k: np.exp(v) for k, v in ln_ns.items()}
+
         return _plot_projections(
             grids=grids,
             ims=ims,
