@@ -140,9 +140,9 @@ class Normal1DSplineMixture(dist.MixtureGeneral):
                 self.mixing_distribution, self._make_components(x), validate_args=False
             )
         return helper.component_log_probs(value)
-    
-    def log_prob(self, 
-                 value: ArrayLike, 
+
+    def log_prob(self,
+                 value: ArrayLike,
                  x: ArrayLike | None = None,
             ) -> jax.Array | Any:
         log_prob = jax.scipy.special.logsumexp(self.component_log_probs(value=value, x=x), axis=-1)

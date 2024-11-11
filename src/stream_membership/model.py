@@ -113,7 +113,7 @@ class ModelMixin:
 
         if data == None:
             ims = {k: np.exp(v) for k, v in ln_ps.items()}
-        
+
         else:
             N_data = next(iter(data.values())).shape[0]
 
