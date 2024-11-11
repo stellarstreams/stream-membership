@@ -17,7 +17,7 @@ from stream_membership.distributions import (
 def test_mixture(SplineClass, extra_kwargs):
     knots = np.linspace(0, 10, 16)
     loc_vals = np.stack((0.5 * knots + 5.0, -0.1 * knots + 15.5), axis=0)
-    ln_scale_vals = np.stack((1e-2 * knots, -0.2 * knots + 1.0), axis=0)
+    scale_vals = np.stack((1e-1 * knots, 1 * knots + 1.0), axis=0)
     x = np.linspace(1, 7, 128)
 
     _p1 = InterpolatedUnivariateSpline(knots, np.linspace(0.2, 0.6, knots.size))(x)
@@ -26,7 +26,7 @@ def test_mixture(SplineClass, extra_kwargs):
     mix = SplineClass(
         mixing_distribution=dist.Categorical(probs=probs),
         loc_vals=loc_vals,
-        ln_scale_vals=ln_scale_vals,
+        scale_vals=scale_vals,
         knots=knots,
         x=x,
         **extra_kwargs,

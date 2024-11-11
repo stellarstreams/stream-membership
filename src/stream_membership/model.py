@@ -65,6 +65,7 @@ class ModelMixin:
         self,
         pars: dict[str, Any],
         grids: dict[str, ArrayLike],
+        data: dict[str, Any] = None, #for scaling to data when making data+model+residual plots
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
         axes: mpl_axes.Axes | None = None,
@@ -110,7 +111,23 @@ class ModelMixin:
             x_coord_name=x_coord_name,
         )
 
-        ims = {k: np.exp(v) for k, v in ln_ps.items()}
+        if data == None:
+            ims = {k: np.exp(v) for k, v in ln_ps.items()}
+
+        else:
+            N_data = next(iter(data.values())).shape[0]
+
+            # Compute the bin area for each 2D grid cell for a cheap integral...
+            bin_area = {
+                k: np.abs(np.diff(grid1[0])[None] * np.diff(grid2[:, 0])[:, None])
+                for k, (grid1, grid2) in grids.items()
+            }
+
+            ln_ns = {
+                k: ln_p + np.log(N_data) + np.log(bin_area[k]) for k, ln_p in ln_ps.items()
+            }
+            ims = {k: np.exp(v) for k, v in ln_ns.items()}
+
         return _plot_projections(
             grids=grids,
             ims=ims,
