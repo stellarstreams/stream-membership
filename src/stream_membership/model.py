@@ -603,7 +603,7 @@ class ModelComponent(eqx.Module, ModelMixin):
             else:
                 _data = jnp.asarray(data[coord_name])
                 _data_err = err.get(coord_name, None)
-            
+
             numpyro_name = self._make_numpyro_name(coord_name)
             if _data_err is not None:
                 sample_shape = (_data.shape[0],) if dist_.batch_shape == () else ()
@@ -971,9 +971,9 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             }
 
             ## Having forced the offtrack proper motions (for example) to be identical
-            ##  to the stream proper motions, make_dists will create the distributions 
+            ##  to the stream proper motions, make_dists will create the distributions
             ##  including numpyro.sample. This should be equivalent to creating an if
-            ##  statement where for tied coordinates (or fixed coordinates), 
+            ##  statement where for tied coordinates (or fixed coordinates),
             ##  we can get the numpyro_name here and do numpyro.deterministic for that parameter.
             ##  This adds the flexibility of being able to have "loosely tied" coordinates
             ##  i.e. where the tied coordinates are not identical, but are related in some way.
@@ -1030,7 +1030,7 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 # some validation time
                 size = 2 if isinstance(name, tuple) else 1
                 slc = slice(i, i + size)
-                
+
                 with numpyro.plate('data', stacked_data.shape[0]):
                     if size == 1:
                         model_data_dist = dist.Normal(jnp.squeeze(model_data[:, slc]), err[name])
