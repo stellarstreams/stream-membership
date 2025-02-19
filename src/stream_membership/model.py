@@ -65,7 +65,7 @@ class ModelMixin:
         self,
         pars: dict[str, Any],
         grids: dict[str, ArrayLike],
-        data: dict[str, Any] = None, #for scaling to data when making data+model+residual plots
+        ndata: dict[str, Any] = None, #for scaling to data when making data+model+residual plots
         grid_coord_names: list[tuple[str, str]] | None = None,
         x_coord_name: str | None = None,
         axes: mpl_axes.Axes | None = None,
@@ -111,12 +111,10 @@ class ModelMixin:
             x_coord_name=x_coord_name,
         )
 
-        if data == None:
+        if ndata == None:
             ims = {k: np.exp(v) for k, v in ln_ps.items()}
 
         else:
-            N_data = next(iter(data.values())).shape[0]
-
             # Compute the bin area for each 2D grid cell for a cheap integral...
             bin_area = {
                 k: np.abs(np.diff(grid1[0])[None] * np.diff(grid2[:, 0])[:, None])
@@ -124,7 +122,7 @@ class ModelMixin:
             }
 
             ln_ns = {
-                k: ln_p + np.log(N_data) + np.log(bin_area[k]) for k, ln_p in ln_ps.items()
+                k: ln_p + np.log(ndata) + np.log(bin_area[k]) for k, ln_p in ln_ps.items()
             }
             ims = {k: np.exp(v) for k, v in ln_ns.items()}
 
@@ -610,13 +608,12 @@ class ModelComponent(eqx.Module, ModelMixin):
             if _data_err is not None:
                 sample_shape = (_data.shape[0],) if dist_.batch_shape == () else ()
                 model_val = numpyro.sample(
-                    numpyro_name, dist_, sample_shape=sample_shape
+                    f"{numpyro_name}:modeldata", dist_, sample_shape=sample_shape
                 )
-                numpyro.sample(
-                    f"{numpyro_name}-obs",
-                    dist.Normal(model_val, _data_err),
-                    obs=_data,
-                )
+
+                with numpyro.plate('data', _data.shape[0]):
+                    numpyro.sample(f"{numpyro_name}-obs",dist.Normal(model_val, _data_err),obs=_data,
+            )
             else:
                 numpyro.sample(f"{numpyro_name}-obs", dist_, obs=_data)
 
@@ -972,6 +969,15 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 override_coord: all_dists[dep][override_coord]
                 for override_coord, dep in tied_map.items()
             }
+
+            ## Having forced the offtrack proper motions (for example) to be identical
+            ##  to the stream proper motions, make_dists will create the distributions
+            ##  including numpyro.sample. This should be equivalent to creating an if
+            ##  statement where for tied coordinates (or fixed coordinates),
+            ##  we can get the numpyro_name here and do numpyro.deterministic for that parameter.
+            ##  This adds the flexibility of being able to have "loosely tied" coordinates
+            ##  i.e. where the tied coordinates are not identical, but are related in some way.
+
             dists = component.make_dists(dists=override_dists)
             concatenated[component_name] = ConcatenatedDistributions(
                 dists=list(dists.values())
@@ -1005,10 +1011,12 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
             numpyro.sample("mixture", mixture, obs=stacked_data)
         else:
             # TODO: this is a hack to make sure we have errors for all coordinates
+            #        Do we need to have errors for all coordinates???
             # NOTE: we should warn the user that this is happening...
-            err = {k: err.get(k, 1e-8) for k in data}
+            # err = {k: err.get(k, jnp.full(stacked_data.shape[0], 1e-8)) for k in data}
+            err = {k: err.get(k, 1e-4) for k in data}
             sample_shape = (stacked_data.shape[0],) if mixture.batch_shape == () else ()
-            model_data = numpyro.sample("mixture", mixture, sample_shape=sample_shape)
+            model_data = numpyro.sample("mixture:modeldata", mixture, sample_shape=sample_shape)
 
             # TODO: something weird here. How are joint coordinates handled? coord_names
             # I think it just the names of the coordinates, not the component names. So
@@ -1022,8 +1030,14 @@ class ComponentMixtureModel(eqx.Module, ModelMixin):
                 # some validation time
                 size = 2 if isinstance(name, tuple) else 1
                 slc = slice(i, i + size)
-                model_data_dist = dist.Normal(model_data[:, slc], err[name])
-                numpyro.sample(f"{name}-obs", model_data_dist, obs=stacked_data[:, slc])
+
+                with numpyro.plate('data', stacked_data.shape[0]):
+                    if size == 1:
+                        model_data_dist = dist.Normal(jnp.squeeze(model_data[:, slc]), err[name])
+                        numpyro.sample(f"{name}-obs", model_data_dist, obs=jnp.squeeze(stacked_data[:, slc]))
+                    elif size == 2:
+                        model_data_dist = dist.Normal(model_data[:, slc], err[name])
+                        numpyro.sample(f"{name}-obs", model_data_dist, obs=stacked_data[:, slc])
                 i += size
 
     def pack_params(

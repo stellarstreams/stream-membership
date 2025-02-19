@@ -4,11 +4,11 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpyro.distributions as dist
 from jax import lax
 from jax.typing import ArrayLike
 from jax_cosmo.scipy.interpolate import InterpolatedUnivariateSpline
-
 
 def _clip_preserve_gradients(x, min_, max_):
     return x + lax.stop_gradient(jnp.clip(x, min_, max_) - x)
@@ -79,7 +79,7 @@ class NormalSpline(dist.Distribution):
                 self.knots,
                 self.scale_vals,
                 k=self.spline_k["scale"],
-                endpoints="not-a-knot",  # TODO: make this customizable?
+                #endpoints="not-a-knot",  # TODO: make this customizable?
             )
 
     def _make_helper_dist(self, x: ArrayLike | None = None) -> dist.Normal:

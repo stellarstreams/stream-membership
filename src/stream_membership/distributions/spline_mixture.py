@@ -10,6 +10,7 @@ from jax.typing import ArrayLike
 from stream_membership.distributions import NormalSpline, TruncatedNormalSpline
 
 
+
 class Normal1DSplineMixture(dist.MixtureGeneral):
     def __init__(
         self,
